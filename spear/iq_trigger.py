@@ -3,22 +3,25 @@
 Module Docstring
 """
 
-__author__ = "Your Name"
+__author__ = "Andrea Lacava"
 __version__ = "0.1.0"
 __license__ = "MIT"
 
 import socket
-import sys
 import argparse
+from typing_extensions import override
+
+from dapp.dapp import DApp
 
 
-def extract_iq_samples(hostname: str = None, port: int = None):
+def extract_iq_samples(hostname: str, port: int):
     """ Main entry point of the app """
     protoname = "tcp"
-    server_hostname = hostname if not hostname else "127.0.0.1"
-    server_port = port if not port else 12346
+    server_hostname = hostname if hostname else "127.0.0.1"
+    server_port = port if port else 12346
+    sockfd : socket.socket
 
-    print(server_hostname, ':', server_port)
+    print(f'{server_hostname}:{server_port}')
 
     try:
         # Get socket
@@ -57,6 +60,11 @@ def extract_iq_samples(hostname: str = None, port: int = None):
     finally:
         if sockfd:
             sockfd.close()
+
+class SpearApp(DApp):
+    @override
+    def method_to_override(self):
+        print("Overridden method")
 
 
 if __name__ == "__main__":
