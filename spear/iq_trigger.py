@@ -5,7 +5,10 @@ Module Docstring
 
 __author__ = "Andrea Lacava"
 __version__ = "0.1.0"
-__license__ = "MIT"
+__license__ = ""
+
+import sys
+sys.path.insert(0, '/home/wineslab/spear-dApp/dapp/')
 
 import socket
 import argparse
@@ -19,17 +22,16 @@ class SpearApp(DApp):
     server_port : int
     sockfd : socket.socket
 
-    def __init__():
+    def __init__(self, **kwargs):
         super().__init__()
-        self.server_hostname = "127.0.0.1" if 'hostname' in kwargs else kwargs['hostname']
-        self.server_port = 12346 if not 'port' in kwargs else kwargs['port']
-        
+        self.server_hostname = kwargs.get('hostname', "127.0.0.1")
+        self.server_port = kwargs.get('port', 12346)
 
     @override
     def method_to_override(self):
         print("Overridden method")
 
-    def extract_iq_samples():
+    def extract_iq_samples(self):
         """ Main entry point of the app """
         
         print(f'{self.server_hostname}:{self.server_port}')
@@ -72,7 +74,6 @@ class SpearApp(DApp):
 
 
 if __name__ == "__main__":
-    """ This is executed when run from the command line """
     parser = argparse.ArgumentParser()
 
     parser.add_argument("-s", "--server", "--hostname", action="store", dest="hostname")
@@ -85,6 +86,6 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    spearDApp = SpearApp(args.hostname, args.port)
+    spearDApp = SpearApp()
 
     spearDApp.extract_iq_samples()
