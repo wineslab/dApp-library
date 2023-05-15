@@ -11,10 +11,10 @@ import sys
 sys.path.insert(0, '/home/wineslab/spear-dApp/dapp/')
 
 import socket
-import argparse
 from typing_extensions import override
 
 from dapp.dapp import DApp
+
 
 class SpearApp(DApp):
     protoname = "tcp"
@@ -72,20 +72,3 @@ class SpearApp(DApp):
                 self.sockfd.close()
 
 
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-
-    parser.add_argument("-s", "--server", "--hostname", action="store", dest="hostname")
-    parser.add_argument("-p", "--port", action="store", dest="port")
-
-    parser.add_argument(
-        "--version",
-        action="version",
-        version="%(prog)s (version {version})".format(version=__version__))
-
-    args = parser.parse_args()
-
-    spearDApp = SpearApp()
-
-    spearDApp.extract_iq_samples()
