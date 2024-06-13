@@ -7,13 +7,18 @@ __author__ = "Andrea Lacava"
 __version__ = "0.1.0"
 __license__ = ""
 
+import os
 import sys
+import time
 sys.path.insert(0, '/home/wineslab/spear-dApp/dapp/')
 
 import socket
 from typing_extensions import override
 
 from dapp.dapp import DApp
+import threading
+
+from .eval_dl_pytorch import evaluate_iq_samples
 
 
 class SpearApp(DApp):
@@ -30,6 +35,40 @@ class SpearApp(DApp):
     @override
     def method_to_override(self):
         print("Overridden method")
+
+    def run(self):
+        # Create two thread objects
+        thread1 = threading.Thread(target=self.extract_iq_samples)
+        thread2 = threading.Thread(target=self.evaluate_samples)
+
+        # Start both threads
+        thread1.start()
+        thread2.start()
+
+        # Wait for both threads to finish
+        thread1.join()
+        thread2.join()
+        print('End of the work')
+
+    def evaluate_samples(self):
+        """ Evaluation of iq samples """
+        file_path = '/home/wineslab/openairinterface5g/iqs_dump/iqs.txt'
+        try:
+            while True:
+                if os.path.exists(file_path):
+                    print('Evaluate samples')
+                    y_pred, explained = evaluate_iq_samples(input=file_path)
+                    print(y_pred)
+                    print(explained)
+                    
+                    print('Remove file')
+                    os.remove(file_path)
+                else:
+                    print("File does not exist. Sleeping for 5 seconds...")
+                    time.sleep(5)
+        except KeyboardInterrupt:
+            print("Program terminated.")
+
 
     def extract_iq_samples(self):
         """ Main entry point of the app """

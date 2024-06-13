@@ -27,4 +27,4 @@ if __name__ == "__main__":
 
     spearDApp = SpearApp()
 
-    spearDApp.extract_iq_samples()
+    spearDApp.run()

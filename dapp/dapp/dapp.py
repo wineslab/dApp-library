@@ -18,6 +18,7 @@ class DApp(ABC):
 
     @abstractmethod
     def method_to_override(self):
+        # should be overridden
         pass
     
 
@@ -27,3 +28,8 @@ class DApp(ABC):
         
         # Additional logic for the main method
         print("Main method logic")
+
+    # create destructor
+    # we should join all the threads created from the dApp here
+    def __del__(self):
+        print('ciao')
