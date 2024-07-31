@@ -6,6 +6,6 @@ setup(name='dApp',
       url='https://github.com/wineslab/spear-dApp',
       author='Andrea Lacava',
       author_email='thecave003@gmail.com',
-      license='',
+      license='MIT',
       packages=find_packages(),
       zip_safe=False)

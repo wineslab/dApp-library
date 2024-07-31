@@ -1,4 +1,5 @@
 typing_extensions
 scikit-learn
-numpy==1.24.4
+numpy
 torch
+matplotlib
