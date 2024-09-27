@@ -39,19 +39,22 @@ class DApp(ABC):
 
     # gNB runs with BW = 40 MHz, with -E (3/4 sampling)
     # No SRS for now, hence in gNB config file set do_SRS = 0
-    # gNB->frame_parms.ofdm_symbol_size = 1536
+    # gNB->frame_parms.ofdm_symbol_size = 1536 # ON COLOSSEUM
+    # gNB->frame_parms.ofdm_symbol_size = 2048 # ON OTA
     # gNB->frame_parms.first_carrier_offset = 900
     # Noise floor threshold needs to be calibrated
     # We receive the symbols and average them over some frames, and do thresholding.
 
-    FFT_SIZE: int = 1536
+    # FFT_SIZE: int = 1536 # COLOSSEUM
+    FFT_SIZE: int = 2048 # OTA
     First_carrier_offset: int = 900
     Average_over_frames: int = 127
     Num_car_prb: int = 12
 
     prb_thrs: int = 75 # This avoids blacklisting PRBs where the BWP is scheduled 
     # (it’s a workaround bc the UE and gNB would not be able to communicate anymore, a cleaner fix is to move the BWP if needed or things like that)
-    Noise_floor_threshold: int = 48 # inferred by observation 
+    # Noise_floor_threshold: int = 48 # inferred by observation on Colosseum
+    Noise_floor_threshold: int = 31 # inferred by observation on OTA
 
     def __init__(self, control: bool = False) -> None:
         super().__init__()
@@ -63,7 +66,7 @@ class DApp(ABC):
         self.counter = 0
         self.limit_per_file = 200
         self.control = control
-        dapp_logger.info(f"Control is {'not' if not self.control else ''} active")
+        dapp_logger.info(f"Control is {'not ' if not self.control else ''}active")
 
         if self.control:            
             # Creating a client to send PRB updates and apply control
@@ -75,7 +78,7 @@ class DApp(ABC):
                     self.prb_updates_socket.connect(("127.0.0.1", 9999))
                 except ConnectionRefusedError:
                     self.prb_updates_socket = None
-                    dapp_logger.info("gNB server for control is not up yet, sleeping for 10 seconds")
+                    dapp_logger.info("gNB server for control is not up yet, sleeping for 5 seconds")
                     time.sleep(5)
 
             self.control_count = 1
@@ -91,9 +94,11 @@ class DApp(ABC):
             self.iq_save_file = open(f"/logs/iqs_{int(time.time())}.bin", "ab")
         
         if self.control:
+            dapp_logger.debug("Start control operations")
             iq_arr = np.frombuffer(data, np.int16)
             iq_comp = iq_arr[::2] + iq_arr[1::2] * 1j
             abs_iq = abs(iq_comp).astype(float)
+            dapp_logger.debug(f"After iq division self.abs_iq_av: {self.abs_iq_av.shape} abs_iq: {abs_iq.shape}")
             self.abs_iq_av += abs_iq
             self.control_count += 1
             dapp_logger.debug(f"control count is: {self.control_count}")
