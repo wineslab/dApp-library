@@ -45,8 +45,6 @@ class DApp(ABC):
     # Noise floor threshold needs to be calibrated
     # We receive the symbols and average them over some frames, and do thresholding.
 
-    # FFT_SIZE: int = 1536 # COLOSSEUM
-    FFT_SIZE: int = 2048 # OTA
     First_carrier_offset: int = 900
     Average_over_frames: int = 127
     Num_car_prb: int = 12
@@ -56,10 +54,15 @@ class DApp(ABC):
     # Noise_floor_threshold: int = 48 # inferred by observation on Colosseum
     Noise_floor_threshold: int = 31 # inferred by observation on OTA
 
-    def __init__(self, control: bool = False) -> None:
+    def __init__(self, ota: bool = False, control: bool = False) -> None:
         super().__init__()
         self.e3_interface = E3Interface("127.0.0.1", 9990)
         self.stop_event = threading.Event()
+        if ota:
+            self.FFT_SIZE = 2048
+        else: # Colosseum
+            self.FFT_SIZE = 1536
+
         self.iq_save_file = open(f"/logs/iqs_{int(time.time())}.bin", "ab")
         # Initialize the singleton instance
         self.e3_interface.add_callback(self.save_iq_samples)
@@ -155,8 +158,9 @@ class DApp(ABC):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="dApp example")
+    parser.add_argument('--ota', action='store_true', default=False, help="Specify is this is OTA or on Colosseum")
     parser.add_argument('--control', action='store_true', default=False, help="Set wheter to perform of not control of PRB")
     args = parser.parse_args()
     
-    dapp = DApp(control=args.control)
+    dapp = DApp(ota=args.ota, control=args.control)
     dapp.control_loop()
