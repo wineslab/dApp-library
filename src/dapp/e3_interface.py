@@ -5,7 +5,7 @@ import logging
 # Configure logging for E3Interface
 e3_logger = logging.getLogger("e3_logger")
 e3_logger.setLevel(logging.DEBUG)
-e3_handler = logging.FileHandler("/logs/e3.log")
+e3_handler = logging.FileHandler("./logs/e3.log")
 e3_handler.setLevel(logging.DEBUG)
 e3_formatter = logging.Formatter("[E3] [%(created)f] %(levelname)s - %(message)s")
 e3_handler.setFormatter(e3_formatter)
