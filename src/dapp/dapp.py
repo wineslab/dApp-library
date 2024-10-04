@@ -17,12 +17,11 @@ import sys
 
 import numpy as np
 np.set_printoptions(threshold=sys.maxsize)
-from plotter import IQPlotter
+from plotter import IQPlotter, EnergyPlotter
 from e3_interface import E3Interface
 import logging
 import matplotlib
 matplotlib.use('TkAgg')
-import matplotlib.pyplot as plt
 
 # Configure logging for DApp
 dapp_logger = logging.getLogger("dapp_logger")
@@ -51,8 +50,7 @@ class DApp(ABC):
     # Noise floor threshold needs to be calibrated
     # We receive the symbols and average them over some frames, and do thresholding.
 
-
-    def __init__(self, ota: bool = False, control: bool = False, gui: bool = False) -> None:
+    def __init__(self, ota: bool = False, control: bool = False, **kwargs):
         super().__init__()
         self.e3_interface = E3Interface("127.0.0.1", 9990)
         self.stop_event = threading.Event()
@@ -85,32 +83,19 @@ class DApp(ABC):
         self.control = control
         dapp_logger.info(f"Control is {'not ' if not self.control else ''}active")
 
-        self.gui = gui
-        self.gui1 = False
-        self.gui2 = True
+        self.energyGui = kwargs.get('energyGui', False)
+        self.iqPlotterGui = kwargs.get('iqPlotterGui', False)
 
         self.control_count = 1
         self.abs_iq_av = np.zeros(self.FFT_SIZE)
         
-        if self.gui:
-            if self.gui1:
-                self.sig_queue = queue.Queue() 
-                plt.ion()
-                self.figure, self.ax = plt.subplots(figsize=(10, 8))
-                # ax.set_ylim([0, 5])
-                self.x = np.arange(self.FFT_SIZE)
-                y = np.arange(self.FFT_SIZE)
-                self.line1, = self.ax.plot(self.x, y)  
-                self.ax.set_ylim([0, 80])
-                plt.title("Spectrum Sensing at gNB (Carrier @3.619 GHz, BW = 40 MHz)", fontsize=18)
-                plt.xlabel("Subcarrier", fontsize=12)
-                plt.ylabel("Energy [dB]", fontsize=12)
-                plt.show()
-
-            if self.gui2:
-                self.iq_queue = queue.Queue() 
-                iq_size = self.FFT_SIZE * 2 # double the size of ofdm_symbol_size since real and imaginary parts are interleaved
-                self.plotter = IQPlotter(buffer_size=100, iq_size=iq_size, bw=self.bw, center_freq=self.center_freq)    
+        if self.energyGui:
+            self.sig_queue = queue.Queue() 
+            self.energyPlotter = EnergyPlotter(self.FFT_SIZE)
+        if self.iqPlotterGui:
+            self.iq_queue = queue.Queue() 
+            iq_size = self.FFT_SIZE * 2 # double the size of ofdm_symbol_size since real and imaginary parts are interleaved
+            self.iqPlotter = IQPlotter(buffer_size=100, iq_size=iq_size, bw=self.bw, center_freq=self.center_freq)    
 
         if self.control:            
             # Creating a client to send PRB updates and apply control
@@ -142,20 +127,16 @@ class DApp(ABC):
             dapp_logger.debug(f"After iq division self.abs_iq_av: {self.abs_iq_av.shape} abs_iq: {abs_iq.shape}")
             self.abs_iq_av += abs_iq
             self.control_count += 1
-            dapp_logger.debug(f"control count is: {self.control_count}")
+            dapp_logger.debug(f"Control count is: {self.control_count}")
 
             if self.control_count == self.Average_over_frames:
                 abs_iq_av_db =  20 * np.log10(1 + (self.abs_iq_av/(self.Average_over_frames)))
-                # this is used only for plotting
-                abs_iq_av_db_shift = np.append(abs_iq_av_db[self.FFT_SIZE//2:self.FFT_SIZE],abs_iq_av_db[0:self.FFT_SIZE//2])
                 abs_iq_av_db_offset_correct = np.append(abs_iq_av_db[self.First_carrier_offset:self.FFT_SIZE],abs_iq_av_db[0:self.First_carrier_offset])
                 dapp_logger.info(f'--- AVG VALUES ----')
                 dapp_logger.info(f'abs_iq_av_db: {abs_iq_av_db.mean()}')
-                dapp_logger.info(f'abs_iq_av_db_shift: {abs_iq_av_db_shift.mean()}')
                 dapp_logger.info(f'abs_iq_av_db_offset_correct: {abs_iq_av_db_offset_correct.mean()}')
                 dapp_logger.info(f'--- MAX VALUES ----')
                 dapp_logger.info(f'abs_iq_av_db: {abs_iq_av_db.max()}')
-                dapp_logger.info(f'abs_iq_av_db_shift: {abs_iq_av_db_shift.max()}')
                 dapp_logger.info(f'abs_iq_av_db_offset_correct: {abs_iq_av_db_offset_correct.max()}')
                 
                 # Blacklisting based on the noise floor threshold
@@ -169,21 +150,14 @@ class DApp(ABC):
                 t1 = threading.Thread(target=self.prb_update, args=(prb_new, prb_blk_list.size,))
                 t1.start() 
 
-                if self.gui:
-                    if self.gui1:
-                        self.sig_queue.put(abs_iq_av_db_shift)
-                    if self.gui2:
-                        self.iq_queue.put(iq_arr)
+                if self.energyGui:
+                    self.sig_queue.put(abs_iq_av_db)
+                if self.iqPlotterGui:
+                    self.iq_queue.put(iq_arr)
 
                 # reset the variables
                 self.abs_iq_av = np.zeros(self.FFT_SIZE)
-                self.control_count = 1
-    
-    def draw(self, data):
-        self.line1.set_xdata(self.x)
-        self.line1.set_ydata(data)
-        self.figure.canvas.draw()
-        self.figure.canvas.flush_events()   
+                self.control_count = 1  
 
     def prb_update(self, prb_blk_list: np.array, n):
         if not self.control:
@@ -196,12 +170,12 @@ class DApp(ABC):
         dapp_logger.info(f"Stop event {self.stop_event.is_set()}")
         while not self.stop_event.is_set():
             try:
-                if self.gui1:
-                    abs_iq_av_db_shift = self.sig_queue.get()
-                    self.draw(abs_iq_av_db_shift)
-                if self.gui2:                  
+                if self.energyGui:
+                    abs_iq_av_db = self.sig_queue.get()
+                    self.energyPlotter.process_iq_data(abs_iq_av_db)
+                if self.iqPlotterGui:                  
                     iq_data = self.iq_queue.get()
-                    self.plotter.process_iq_data(iq_data)
+                    self.iqPlotter.process_iq_data(iq_data)
             except KeyboardInterrupt:
                 dapp_logger.debug("Keyboard interrupt")
                 self.stop_event.set()
@@ -220,10 +194,11 @@ class DApp(ABC):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="dApp example")
-    parser.add_argument('--ota', action='store_true', default=False, help="Specify is this is OTA or on Colosseum")
-    parser.add_argument('--control', action='store_true', default=False, help="Set wheter to perform of not control of PRB")
-    parser.add_argument('--gui', action='store_true', default=False, help="Set wheter to show the sensed spectrum")
+    parser.add_argument('--ota', action='store_true', default=False, help="Specify if this is OTA or on Colosseum")
+    parser.add_argument('--control', action='store_true', default=False, help="Set whether to perform control of PRB")
+    parser.add_argument('--energy-gui', action='store_true', default=False, help="Set whether to enable the energy GUI")
+    parser.add_argument('--iq-plotter-gui', action='store_true', default=False, help="Set whether to enable the IQ Plotter GUI")
     args = parser.parse_args()
     
-    dapp = DApp(ota=args.ota, control=args.control, gui=args.gui)
+    dapp = DApp(ota=args.ota, control=args.control, energyGui=args.energy_gui, iqPlotterGui=args.iq_plotter_gui)
     dapp.control_loop()

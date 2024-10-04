@@ -1,4 +1,3 @@
-import time
 import numpy as np
 import matplotlib
 matplotlib.use('TkAgg')
@@ -90,6 +89,53 @@ class IQPlotter:
         self.update_plot(self.buffer)
 
 
+
+class EnergyPlotter:
+    def __init__(self, fft_size=1536):
+        """
+        Initialize the IQ plotter with buffer size and IQ data dimensions.
+        fft_size: Size of the FFT.
+        """
+        self.fig, self.ax, self.line1 = self.initialize_plot(fft_size)
+
+    def initialize_plot(self, fft_size):
+        """
+        Initialize the plot with empty data.
+        iq_shape: Shape of the IQ data (rows, columns).
+        Returns the figure and axes object for later updates.
+        """
+        plt.ion()
+        fig, ax = plt.subplots(figsize=(10, 8))
+        self.x = np.arange(fft_size)
+        y = np.arange(fft_size)
+        line1, = self.ax.plot(self.x, y)  
+        ax.set_ylim([0, 80])
+        plt.title("Spectrum Sensing at gNB (Carrier @3.619 GHz, BW = 40 MHz)", fontsize=18)
+        plt.xlabel("Subcarrier", fontsize=12)
+        plt.ylabel("Energy [dB]", fontsize=12)
+        plt.show()
+         
+        return fig, ax, line1
+
+    def update_plot(self, new_data):
+        """
+        Update the plot with new data.
+        new_data: New data to display.
+        """
+        self.line1.set_xdata(self.x)
+        self.line1.set_ydata(new_data)
+        self.figure.canvas.draw()
+        self.figure.canvas.flush_events() 
+
+    def process_iq_data(self, abs_iq_av_db):
+        """
+        Process IQ data and update the rolling buffer and the plot.
+        iq_data: Complex IQ data (real and imaginary parts already combined).
+        """
+        abs_iq_av_db_shift = np.append(abs_iq_av_db[self.FFT_SIZE//2:self.FFT_SIZE],abs_iq_av_db[0:self.FFT_SIZE//2])
+
+        # Update the plot with the new buffer
+        self.update_plot(abs_iq_av_db_shift)
 
 if __name__ == "__main__":
     # Create an instance of IQPlotter
