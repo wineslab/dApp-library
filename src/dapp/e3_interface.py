@@ -1,3 +1,4 @@
+import os
 import socket
 import threading
 import logging
@@ -15,47 +16,52 @@ e3_logger.addHandler(e3_handler)
 class E3Interface:
     _instance = None
     _lock = threading.Lock()
+    E3_SOCKET_PATH = "/tmp/dapps/e3_socket"
 
-    def __new__(cls, server_ip, port, *args, **kwargs):
+    def __new__(cls, *args, **kwargs):
         with cls._lock:
             if not cls._instance:
                 cls._instance = super(E3Interface, cls).__new__(cls, *args, **kwargs)
         return cls._instance
 
-    def __init__(self, server_ip, port, *args, **kwargs):
+    def __init__(self, *args, **kwargs):
         if not hasattr(self, "initialized"):
-            self.server_ip = server_ip
-            self.port = port
             self.callbacks = []
             self.stop_event = threading.Event()
             self.initialized = True
-            self.server_thread = threading.Thread(target=self._tcp_server)
-            self._start_tcp_server()
+            self._start_server()
 
     def __del__(self):
         self.stop_server()
 
-    def _start_tcp_server(self):
+    def _start_server(self):
+        self.server_thread = threading.Thread(target=self._uds_server)
         self.server_thread.daemon = True
         self.server_thread.start()
 
-    def _tcp_server(self):
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.bind((self.server_ip, self.port))
+    def _uds_server(self):
+        if os.path.exists(self.E3_SOCKET_PATH):
+           os.remove(self.E3_SOCKET_PATH)
+
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.bind(self.E3_SOCKET_PATH)
+
+        os.chmod(self.E3_SOCKET_PATH, 0o770)
+
         sock.listen(5)
-        e3_logger.info(f"TCP server listening on {self.server_ip}:{self.port}")
+        e3_logger.info(f"UDS server listening on {self.E3_SOCKET_PATH}")
 
         try:
             while not self.stop_event.is_set():
                 sock.settimeout(5.0)  # Set timeout to periodically check stop_event
                 try:
-                    conn, addr = sock.accept()
+                    conn, _ = sock.accept()
                     threading.Thread(target=self._handle_client, args=(conn,)).start()
                 except socket.timeout:
                     continue
         finally:
             sock.close()
-            e3_logger.info("TCP server stopped.")
+            e3_logger.info("UDS server stopped.")
 
     # This should be the actual E3 data handling, for this demo we use the one with Rajeev format
     # def _handle_client(self, conn):
@@ -92,6 +98,7 @@ class E3Interface:
         finally:
             e3_logger.debug("Close connection")
             conn.close()
+            os.remove(self.E3_SOCKET_PATH)
 
     def _handle_incoming_data(self, data):
         for callback in self.callbacks:
@@ -120,7 +127,7 @@ if __name__ == "__main__":
         print(f"Callback called with data: {data.decode()}")
 
     # Initialize the singleton instance
-    e3_interface = E3Interface("127.0.0.1", 9999)
+    e3_interface = E3Interface()
     e3_interface.add_callback(sample_callback)
 
     # Remove a callback
