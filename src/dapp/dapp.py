@@ -39,6 +39,7 @@ class DApp(ABC):
     control: bool
     counter: int
     limit_per_file: int
+    DAPP_SOCKET_PATH = "/tmp/dapps/dapp_socket"
 
     ###  Configuration ###
     # gNB runs with BW = 40 MHz, with -E (3/4 sampling)
@@ -52,7 +53,7 @@ class DApp(ABC):
 
     def __init__(self, ota: bool = False, control: bool = False, **kwargs):
         super().__init__()
-        self.e3_interface = E3Interface("127.0.0.1", 9990)
+        self.e3_interface = E3Interface()
         self.stop_event = threading.Event()
         if ota:
             dapp_logger.info(f'Using OTA configuration')
@@ -103,9 +104,9 @@ class DApp(ABC):
 
             while self.prb_updates_socket is None:
                 try:
-                    self.prb_updates_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    self.prb_updates_socket.connect(("127.0.0.1", 9999))
-                except ConnectionRefusedError:
+                    self.prb_updates_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                    self.prb_updates_socket.connect(self.DAPP_SOCKET_PATH)
+                except (FileNotFoundError, ConnectionRefusedError):
                     self.prb_updates_socket = None
                     dapp_logger.info("gNB server for control is not up yet, sleeping for 5 seconds")
                     time.sleep(5)
@@ -167,7 +168,7 @@ class DApp(ABC):
         self.prb_updates_socket.send(array1 + array2)
 
     def control_loop(self):
-        dapp_logger.info(f"Stop event {self.stop_event.is_set()}")
+        dapp_logger.debug(f"Start control loop")
         while not self.stop_event.is_set():
             try:
                 if self.energyGui:
