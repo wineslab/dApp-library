@@ -22,11 +22,14 @@ from e3_interface import E3Interface
 import logging
 import matplotlib
 matplotlib.use('TkAgg')
+import os
+
+LOG_DIR = ('.' if os.geteuid() != 0 else '') + '/logs/'
 
 # Configure logging for DApp
 dapp_logger = logging.getLogger("dapp_logger")
 dapp_logger.setLevel(logging.INFO)
-dapp_handler = logging.FileHandler("./logs/dapp.log")
+dapp_handler = logging.FileHandler(f"{LOG_DIR}/dapp.log")
 dapp_handler.setLevel(logging.INFO)
 dapp_formatter = logging.Formatter("[dApp] [%(created)f] %(levelname)s - %(message)s")
 dapp_handler.setFormatter(dapp_formatter)
@@ -76,7 +79,7 @@ class DApp(ABC):
             self.Num_car_prb = 12
             self.prb_thrs = 75 # See above for explanation
 
-        self.iq_save_file = open(f"./logs/iqs_{int(time.time())}.bin", "ab")
+        self.iq_save_file = open(f"{LOG_DIR}/iqs_{int(time.time())}.bin", "ab")
         # Initialize the singleton instance
         self.e3_interface.add_callback(self.save_iq_samples)
         self.counter = 0
@@ -118,7 +121,7 @@ class DApp(ABC):
         self.iq_save_file.flush()
         if self.counter > self.limit_per_file:
             self.iq_save_file.close()
-            self.iq_save_file = open(f"./logs/iqs_{int(time.time())}.bin", "ab")
+            self.iq_save_file = open(f"{LOG_DIR}/iqs_{int(time.time())}.bin", "ab")
         
         if self.control:
             dapp_logger.debug("Start control operations")
