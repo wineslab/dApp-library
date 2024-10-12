@@ -29,6 +29,11 @@ sudo chown :dapp /tmp/dapps
 sudo chmod g+ws /tmp/dapps
 ```
 
+If the dApp is not run from the root user, a new folder should be included called `logs`
+```
+# In the root of the project if you're following the dApp kickoff
+mkdir logs
+```
 
 ### Configuration for OAI
 - Make sure that do_SRS flag is set to 0
