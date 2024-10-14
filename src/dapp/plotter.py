@@ -4,7 +4,7 @@ matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
 import os
 
-print(os.environ['DISPLAY'])
+print(os.environ.get('DISPLAY'))
 
 class IQPlotter:
     def __init__(self, buffer_size=100, iq_size=1536, bw=46.08e6, center_freq=3.6e9):
