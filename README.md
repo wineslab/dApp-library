@@ -9,8 +9,9 @@ password of the colosseum container of dApp is `spear`
 ./build_oai -w USRP --ninja --gNB --build-e3
 ```
 
-### System configuration
+### System configuration for OTA
 
+This part of the guide is inteded to be only if running with `--ota` thus with UDS sockets
 If we need the dApp to run in a different user than OAI (e.g., $USER vs root) we need to create a specific unix users group called `dapp` and we assign root and user to this group to enable shared UDS through a dedicated foldert:
 ```
 sudo groupadd dapp
@@ -48,8 +49,11 @@ OAI should start _before_ running the dApp
 python3 src/dapp/dapp.py
 ```
 
-There are two possible arguments:
+There are many possible arguments:
 - `ota` bool (false): If true, use the OAI and spectrum configurations for OTA else use the ones of Colosseum
 - `control` bool (false): If set to true, performs the PRB masking
 - `energy-gui` bool (false): If set to true, creates and show the energy spectrum
-- `iq-plotter-gui`bool (false): If set to true, creates and show the sensed spectrum
+- `iq-plotter-gui` bool (false): If set to true, creates and show the sensed spectrum
+- `save-iqs` bool (false): Specify if this is data collection run or not. In the first case I/Q samples will be saved
+- `profile`  bool (false): Enable profiling with cProfile
+- `timed` bool (false): Run with a 5-minute time limit

@@ -17,11 +17,8 @@ import sys
 
 import numpy as np
 np.set_printoptions(threshold=sys.maxsize)
-from plotter import IQPlotter, EnergyPlotter
 from e3_interface import E3Interface
 import logging
-import matplotlib
-matplotlib.use('TkAgg')
 import os
 
 LOG_DIR = ('.' if os.geteuid() != 0 else '') + '/logs/'
@@ -39,51 +36,46 @@ dapp_logger.addHandler(dapp_handler)
 class DApp(ABC):
 
     e3_interface: E3Interface
-    control: bool
-    counter: int
-    limit_per_file: int
-    DAPP_SOCKET_PATH = "/tmp/dapps/dapp_socket"
+    DAPP_UDS_SOCKET_PATH = "/tmp/dapps/dapp_socket"
 
     ###  Configuration ###
     # gNB runs with BW = 40 MHz, with -E (3/4 sampling)
-    # OAI sampling frequency 46.08e6 
+    # Center frequency = 3.6192 GHz
+    # OAI sampling frequency 46.08e6
     # No SRS for now, hence in gNB config file set do_SRS = 0
-    # gNB->frame_parms.ofdm_symbol_size = 1536 # ON COLOSSEUM
-    # gNB->frame_parms.ofdm_symbol_size = 2048 # ON OTA
+    # gNB->frame_parms.ofdm_symbol_size = 1536
     # gNB->frame_parms.first_carrier_offset = 900
     # Noise floor threshold needs to be calibrated
     # We receive the symbols and average them over some frames, and do thresholding.
 
-    def __init__(self, ota: bool = False, control: bool = False, **kwargs):
+    def __init__(self, ota: bool = False, save_iqs: bool = False, control: bool = False, **kwargs):
         super().__init__()
-        self.e3_interface = E3Interface()
+        self.profile = kwargs.get('profile', False)
+        self.e3_interface = E3Interface(ota=ota, profile=self.profile)
         self.stop_event = threading.Event()
+
+        self.bw = 40.08e6  # Bandwidth in Hz
+        self.center_freq = 3.6192e9 # Center frequency in Hz
+        self.First_carrier_offset = 900
+        self.Num_car_prb = 12
+        self.prb_thrs = 75 # This avoids blacklisting PRBs where the BWP is scheduled (it’s a workaround bc the UE and gNB would not be able to communicate anymore, a cleaner fix is to move the BWP if needed or things like that)
+        self.FFT_SIZE = 1536  
+
         if ota:
             dapp_logger.info(f'Using OTA configuration')
-            self.bw = 40.08e6  # Bandwidth in Hz
-            self.center_freq = 3.288e9 # Center frequency in Hz
-            self.FFT_SIZE = 2048
-            self.Noise_floor_threshold = 15
-            self.First_carrier_offset = 0
-            self.Average_over_frames = 127
-            self.Num_car_prb = 106
-            self.prb_thrs = 0 # This avoids blacklisting PRBs where the BWP is scheduled (it’s a workaround bc the UE and gNB would not be able to communicate anymore, a cleaner fix is to move the BWP if needed or things like that)
+            self.Noise_floor_threshold = 45 # this really depends on the RF conditions and should be carefully calibrated
+            self.Average_over_frames = 63
         else: # Colosseum
             dapp_logger.info(f'Using Colosseum configuration')
-            self.bw = 40.08e6 # Bandwidth in Hz
-            self.center_freq = 3.6e9 # Center frequency in Hz
-            self.FFT_SIZE = 1536
-            self.Noise_floor_threshold = 48
-            self.First_carrier_offset = 900
-            self.Average_over_frames = 127
-            self.Num_car_prb = 12
-            self.prb_thrs = 75 # See above for explanation
+            self.Noise_floor_threshold = 53
+            self.Average_over_frames = 63
 
-        self.iq_save_file = open(f"{LOG_DIR}/iqs_{int(time.time())}.bin", "ab")
-        # Initialize the singleton instance
-        self.e3_interface.add_callback(self.save_iq_samples)
-        self.counter = 0
-        self.limit_per_file = 200
+        self.save_iqs = save_iqs
+        self.e3_interface.add_callback(self.get_iqs_from_ran)
+        if self.save_iqs:
+            self.iq_save_file = open(f"{LOG_DIR}/iqs_{int(time.time())}.bin", "ab")
+            self.save_counter = 0
+            self.limit_per_file = 200
         self.control = control
         dapp_logger.info(f"Control is {'not ' if not self.control else ''}active")
 
@@ -92,37 +84,48 @@ class DApp(ABC):
 
         self.control_count = 1
         self.abs_iq_av = np.zeros(self.FFT_SIZE)
-        
+
         if self.energyGui:
+            from plotter import EnergyPlotter
             self.sig_queue = queue.Queue() 
-            self.energyPlotter = EnergyPlotter(self.FFT_SIZE)
+            self.energyPlotter = EnergyPlotter(self.FFT_SIZE, bw=self.bw, center_freq=self.center_freq) 
+
         if self.iqPlotterGui:
+            from plotter import IQPlotter
             self.iq_queue = queue.Queue() 
             iq_size = self.FFT_SIZE * 2 # double the size of ofdm_symbol_size since real and imaginary parts are interleaved
-            self.iqPlotter = IQPlotter(buffer_size=100, iq_size=iq_size, bw=self.bw, center_freq=self.center_freq)    
+            self.iqPlotter = IQPlotter(buffer_size=500, iq_size=iq_size, bw=self.bw, center_freq=self.center_freq)    
 
         if self.control:            
             # Creating a client to send PRB updates and apply control
             self.prb_updates_socket = None
-
+            socket_type = socket.AF_UNIX if ota else socket.AF_INET
+            connection_target = self.DAPP_UDS_SOCKET_PATH if ota else ("127.0.0.1", 9999)
+            dapp_logger.info(f"{'Control socket is using AF_UNIX' if socket_type == 1 else 'AF_INET'} {connection_target}")
+            
             while self.prb_updates_socket is None:
                 try:
-                    self.prb_updates_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                    self.prb_updates_socket.connect(self.DAPP_SOCKET_PATH)
+                    self.prb_updates_socket = socket.socket(socket_type, socket.SOCK_STREAM)
+                    self.prb_updates_socket.connect(connection_target)
                 except (FileNotFoundError, ConnectionRefusedError):
                     self.prb_updates_socket = None
                     dapp_logger.info("gNB server for control is not up yet, sleeping for 5 seconds")
                     time.sleep(5)
 
-    def save_iq_samples(self, data):
-        dapp_logger.debug("I will write on the logfile iqs")
-        self.counter += 1
-        self.iq_save_file.write(data)
-        self.iq_save_file.flush()
-        if self.counter > self.limit_per_file:
-            self.iq_save_file.close()
-            self.iq_save_file = open(f"{LOG_DIR}/iqs_{int(time.time())}.bin", "ab")
-        
+            self.prb_queue = queue.Queue() 
+            self.control_thread = threading.Thread(target=self.prb_update_task)
+            self.control_thread.start() 
+
+    def get_iqs_from_ran(self, data):
+        if self.save_iqs:
+            dapp_logger.debug("I will write on the logfile iqs")
+            self.save_counter += 1
+            self.iq_save_file.write(data)
+            self.iq_save_file.flush()
+            if self.save_counter > self.limit_per_file:
+                self.iq_save_file.close()
+                self.iq_save_file = open(f"{LOG_DIR}/iqs_{int(time.time())}.bin", "ab")
+
         if self.control:
             dapp_logger.debug("Start control operations")
             iq_arr = np.frombuffer(data, np.int16)
@@ -133,6 +136,9 @@ class DApp(ABC):
             self.control_count += 1
             dapp_logger.debug(f"Control count is: {self.control_count}")
 
+            if self.iqPlotterGui:
+                self.iq_queue.put(iq_arr)
+
             if self.control_count == self.Average_over_frames:
                 abs_iq_av_db =  20 * np.log10(1 + (self.abs_iq_av/(self.Average_over_frames)))
                 abs_iq_av_db_offset_correct = np.append(abs_iq_av_db[self.First_carrier_offset:self.FFT_SIZE],abs_iq_av_db[0:self.First_carrier_offset])
@@ -142,67 +148,119 @@ class DApp(ABC):
                 dapp_logger.info(f'--- MAX VALUES ----')
                 dapp_logger.info(f'abs_iq_av_db: {abs_iq_av_db.max()}')
                 dapp_logger.info(f'abs_iq_av_db_offset_correct: {abs_iq_av_db_offset_correct.max()}')
-                
+
                 # Blacklisting based on the noise floor threshold
                 f_ind = np.arange(self.FFT_SIZE)
-                blklist_sub_carier = f_ind[abs_iq_av_db_offset_correct > self.Noise_floor_threshold]
-                np.sort(blklist_sub_carier)
-                prb_blk_list = np.unique((np.floor(blklist_sub_carier/self.Num_car_prb))).astype(np.uint16)
+                blklist_sub_carrier = f_ind[abs_iq_av_db_offset_correct > self.Noise_floor_threshold]
+                np.sort(blklist_sub_carrier)
+                dapp_logger.info(f'blklist_sub_carrier: {blklist_sub_carrier}')
+                prb_blk_list = np.unique((np.floor(blklist_sub_carrier/self.Num_car_prb))).astype(np.uint16)
+                dapp_logger.info(f'prb_blk_list: {prb_blk_list}')
                 prb_blk_list = prb_blk_list[prb_blk_list > self.prb_thrs]
                 dapp_logger.info(f"Blacklisted prbs: {prb_blk_list}")
                 prb_new = prb_blk_list.view(prb_blk_list.dtype.newbyteorder('>'))
-                t1 = threading.Thread(target=self.prb_update, args=(prb_new, prb_blk_list.size,))
-                t1.start() 
+                self.prb_queue.put(((prb_new, prb_blk_list.size)))
 
                 if self.energyGui:
                     self.sig_queue.put(abs_iq_av_db)
-                if self.iqPlotterGui:
-                    self.iq_queue.put(iq_arr)
 
                 # reset the variables
                 self.abs_iq_av = np.zeros(self.FFT_SIZE)
                 self.control_count = 1  
 
-    def prb_update(self, prb_blk_list: np.array, n):
+    def prb_update(self, prb_blk_list, n):
+        array1 = n.to_bytes(2, "little")
+        array2 = prb_blk_list.tobytes(order="C")
+        self.prb_updates_socket.send(array1 + array2)
+
+    def prb_update_task(self):
         if not self.control:
             return
-        array2 = prb_blk_list.tobytes(order="C")
-        array1 = n.to_bytes(2, "little")
-        self.prb_updates_socket.send(array1 + array2)
+
+        if self.profile:
+            self.prb_profiler = cProfile.Profile()
+            self.prb_profiler.enable()
+
+        while not self.stop_event.is_set():
+            try:
+                prb_blk_list, n = self.prb_queue.get(timeout=1.5)
+                self.prb_update(prb_blk_list, n)
+            except queue.Empty:
+                dapp_logger.debug("Empty queue")
+
+        if self.profile:
+            self.prb_profiler.disable()
+            with open(f"{LOG_DIR}/prb_update.txt", "w") as f:
+                p = pstats.Stats(self.prb_profiler, stream=f)
+                p.sort_stats("cumtime").print_stats()
 
     def control_loop(self):
         dapp_logger.debug(f"Start control loop")
-        while not self.stop_event.is_set():
-            try:
+        try:
+            while not self.stop_event.is_set():
                 if self.energyGui:
                     abs_iq_av_db = self.sig_queue.get()
                     self.energyPlotter.process_iq_data(abs_iq_av_db)
-                if self.iqPlotterGui:                  
+                if self.iqPlotterGui:
                     iq_data = self.iq_queue.get()
                     self.iqPlotter.process_iq_data(iq_data)
-            except KeyboardInterrupt:
-                dapp_logger.debug("Keyboard interrupt")
-                self.stop_event.set()
+        except KeyboardInterrupt:
+            dapp_logger.error("Keyboard interrupt, closing dApp")
+            self.stop_event.set()
 
-    def __del__(self):
+    def stop(self):
+        print('Stop of the dApp')
         self.stop_event.set()
         if self.control:
             # close connection socket with the client
+            self.control_thread.join()
             self.prb_updates_socket.close()
             dapp_logger.info("Connection to client for control closed")
 
         self.e3_interface.stop_server()
         dapp_logger.info("Stopped server")
-        self.iq_save_file.close()
+        if self.save_iqs:
+            self.iq_save_file.close()
 
+def stop_program(dapp):
+    dapp.stop()
+    print("Test completed.")
+
+def main(args, time: float = 400.0):
+    dapp = DApp(ota=args.ota, save_iqs=args.save_iqs, control=args.control, profile=args.profile, energyGui=args.energy_gui, iqPlotterGui=args.iq_plotter_gui)
+
+    if args.timed:
+        timer = threading.Timer(time, stop_program, [dapp])
+        timer.start()
+    else:
+        timer = None
+
+    try:
+        dapp.control_loop()
+    finally:
+        if args.timed:
+            timer.cancel()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="dApp example")
     parser.add_argument('--ota', action='store_true', default=False, help="Specify if this is OTA or on Colosseum")
+    parser.add_argument('--save-iqs', action='store_true', default=False, help="Specify if this is data collection run or not. In the first case I/Q samples will be saved")
     parser.add_argument('--control', action='store_true', default=False, help="Set whether to perform control of PRB")
     parser.add_argument('--energy-gui', action='store_true', default=False, help="Set whether to enable the energy GUI")
     parser.add_argument('--iq-plotter-gui', action='store_true', default=False, help="Set whether to enable the IQ Plotter GUI")
+    parser.add_argument('--profile', action='store_true', default=False, help="Enable profiling with cProfile")
+    parser.add_argument('--timed', action='store_true', default=False, help="Run with a 5-minute time limit")
+
     args = parser.parse_args()
-    
-    dapp = DApp(ota=args.ota, control=args.control, energyGui=args.energy_gui, iqPlotterGui=args.iq_plotter_gui)
-    dapp.control_loop()
+
+    if args.profile:
+        import cProfile
+        import pstats
+        cProfile.run('main(args)', 'dapp_profile')
+
+        with open(f"{LOG_DIR}/dapp.txt", "w") as f:
+            p = pstats.Stats('dapp_profile', stream=f)
+            p.sort_stats('cumtime').print_stats()
+        os.remove('dapp_profile')
+    else:
+        main(args)
