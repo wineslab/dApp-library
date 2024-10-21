@@ -63,7 +63,7 @@ class DApp(ABC):
 
         if ota:
             dapp_logger.info(f'Using OTA configuration')
-            self.Noise_floor_threshold = 45 # this really depends on the RF conditions and should be carefully calibrated
+            self.Noise_floor_threshold = 20 # this really depends on the RF conditions and should be carefully calibrated
             self.Average_over_frames = 63
         else: # Colosseum
             dapp_logger.info(f'Using Colosseum configuration')
@@ -81,20 +81,27 @@ class DApp(ABC):
 
         self.energyGui = kwargs.get('energyGui', False)
         self.iqPlotterGui = kwargs.get('iqPlotterGui', False)
+        self.demoGui = kwargs.get('demoGui', False)
 
         self.control_count = 1
         self.abs_iq_av = np.zeros(self.FFT_SIZE)
 
         if self.energyGui:
-            from plotter import EnergyPlotter
+            from energy_plotter import EnergyPlotter
             self.sig_queue = queue.Queue() 
             self.energyPlotter = EnergyPlotter(self.FFT_SIZE, bw=self.bw, center_freq=self.center_freq) 
 
         if self.iqPlotterGui:
-            from plotter import IQPlotter
+            from iq_plotter import IQPlotter
             self.iq_queue = queue.Queue() 
             iq_size = self.FFT_SIZE * 2 # double the size of ofdm_symbol_size since real and imaginary parts are interleaved
             self.iqPlotter = IQPlotter(buffer_size=500, iq_size=iq_size, bw=self.bw, center_freq=self.center_freq)    
+
+        if self.demoGui:
+            from demo_plotter import DemoGui
+            self.demo_queue = queue.Queue()
+            iq_size = self.FFT_SIZE * 2 # double the size of ofdm_symbol_size since real and imaginary parts are interleaved
+            self.demo = DemoGui(buffer_size=100, iq_size=iq_size) 
 
         if self.control:            
             # Creating a client to send PRB updates and apply control
@@ -126,9 +133,15 @@ class DApp(ABC):
                 self.iq_save_file.close()
                 self.iq_save_file = open(f"{LOG_DIR}/iqs_{int(time.time())}.bin", "ab")
 
+        iq_arr = np.frombuffer(data, np.int16)
+        if self.iqPlotterGui:
+            self.iq_queue.put(iq_arr)
+
+        if self.demoGui:
+            self.demo_queue.put(("iq_data", iq_arr))
+
         if self.control:
             dapp_logger.debug("Start control operations")
-            iq_arr = np.frombuffer(data, np.int16)
             iq_comp = iq_arr[::2] + iq_arr[1::2] * 1j
             abs_iq = abs(iq_comp).astype(float)
             dapp_logger.debug(f"After iq division self.abs_iq_av: {self.abs_iq_av.shape} abs_iq: {abs_iq.shape}")
@@ -163,6 +176,9 @@ class DApp(ABC):
 
                 if self.energyGui:
                     self.sig_queue.put(abs_iq_av_db)
+                
+                if self.demoGui:
+                    self.demo_queue.put(("prb_list", prb_blk_list))
 
                 # reset the variables
                 self.abs_iq_av = np.zeros(self.FFT_SIZE)
@@ -204,13 +220,17 @@ class DApp(ABC):
                 if self.iqPlotterGui:
                     iq_data = self.iq_queue.get()
                     self.iqPlotter.process_iq_data(iq_data)
+                if self.demoGui:
+                    message = self.demo_queue.get()
+                    self.demo.process_iq_data(message)
         except KeyboardInterrupt:
             dapp_logger.error("Keyboard interrupt, closing dApp")
             self.stop_event.set()
 
     def stop(self):
-        print('Stop of the dApp')
+        dapp_logger.info('Stop of the dApp')
         self.stop_event.set()
+        
         if self.control:
             # close connection socket with the client
             self.control_thread.join()
@@ -219,15 +239,19 @@ class DApp(ABC):
 
         self.e3_interface.stop_server()
         dapp_logger.info("Stopped server")
+        
         if self.save_iqs:
             self.iq_save_file.close()
+        
+        if self.demoGui:
+            self.demo.stop()
 
 def stop_program(dapp):
     dapp.stop()
     print("Test completed.")
 
 def main(args, time: float = 400.0):
-    dapp = DApp(ota=args.ota, save_iqs=args.save_iqs, control=args.control, profile=args.profile, energyGui=args.energy_gui, iqPlotterGui=args.iq_plotter_gui)
+    dapp = DApp(ota=args.ota, save_iqs=args.save_iqs, control=args.control, profile=args.profile, energyGui=args.energy_gui, iqPlotterGui=args.iq_plotter_gui, demoGui=args.demo_gui)
 
     if args.timed:
         timer = threading.Timer(time, stop_program, [dapp])
@@ -248,6 +272,7 @@ if __name__ == "__main__":
     parser.add_argument('--control', action='store_true', default=False, help="Set whether to perform control of PRB")
     parser.add_argument('--energy-gui', action='store_true', default=False, help="Set whether to enable the energy GUI")
     parser.add_argument('--iq-plotter-gui', action='store_true', default=False, help="Set whether to enable the IQ Plotter GUI")
+    parser.add_argument('--demo-gui', action='store_true', default=False, help="Set whether to enable the Demo GUI")
     parser.add_argument('--profile', action='store_true', default=False, help="Enable profiling with cProfile")
     parser.add_argument('--timed', action='store_true', default=False, help="Run with a 5-minute time limit")
 
