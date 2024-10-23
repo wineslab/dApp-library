@@ -10,7 +10,7 @@ class DemoGui:
         self.app = Flask(__name__)
         self.app.config['TEMPLATES_AUTO_RELOAD'] = True
         self.socketio = SocketIO(self.app)
-        
+
         # Parameters
         self.BUFFER_SIZE = buffer_size
         self.iq_size = iq_size
@@ -19,7 +19,7 @@ class DemoGui:
         
         # Route setup
         self.app.add_url_rule("/", view_func=self.index)
-        
+
         # SocketIO event handlers
         self.socketio.on_event("connect", self.handle_initial_connection)
         self._initialize_plot()
@@ -30,7 +30,7 @@ class DemoGui:
 
     def index(self):
         return render_template("index.html")
-    
+
     def run(self):
         self.socketio.run(self.app, host="0.0.0.0", port=7778)
 
@@ -40,8 +40,18 @@ class DemoGui:
 
     def handle_initial_connection(self):
         num_prbs = 106
+        iqs_to_show = int(
+            self.iq_size / 2
+        )  # / 2 since the size received is real and imaginary part
+        # Each PRB corresponds to 12 subcarriers
+        # Parameter first_carrier_offset (currently set to 900) is the first subcarrier.
+        # So PRB 0 is [900-911], 1 is [912-923], etc. They wrap around fft_size (now at 1536)
+        # The carrier frequency is in the middle PRB (including DC leak on some radios), this means it falls at (first_carrier_offset + 106*12/2) % fft_size? where % is the modulo operation
+        # The first 76 PRB usually have channels that should not be nulled (but we should investigate more options to enable this)
+        # So if you want the spectrum waterfall to correspond to the PRB masking plot, you can rotate them as per bullet 2 above and drop [635-899]
+        iqs_to_show -= 264  # is the size of the array to drop
         data_buffer = {
-            "magnitude": np.zeros((self.BUFFER_SIZE, int(self.iq_size /2))).tolist(),
+            "magnitude": np.zeros((self.BUFFER_SIZE, iqs_to_show)).tolist(),
             "num_prbs": num_prbs,
         }
         self.socketio.emit("initialize_plot", data_buffer)
@@ -63,17 +73,17 @@ class DemoGui:
             iq_data = payload
             if iq_data.size != self.iq_size:
                 raise ValueError(f'Expected IQ data of size {self.iq_size}, but got {iq_data.size}')
-            
+
             self.sampling_counter += 1        
             if self.sampling_counter >= self.sampling_threshold:
-                magnitude_dB = self._process_iq_data(iq_data)[::-1].tolist()
+                magnitude_dB = self._process_iq_data(iq_data)[::-1].tolist() # visualization processing is delegated to client
                 self.socketio.emit("update_plot", {"magnitude": magnitude_dB})
                 self.sampling_counter = 0
 
         elif plot == "prb_list":
             prb_list = payload.tolist()
             self.socketio.emit("update_plot", {"prb_list": prb_list})
-    
+
     def stop(self):
         """Stops the server and kills the thread."""
         if self.run_thread and self.run_thread.is_alive():

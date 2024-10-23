@@ -60,15 +60,14 @@ class DApp(ABC):
         self.Num_car_prb = 12
         self.prb_thrs = 75 # This avoids blacklisting PRBs where the BWP is scheduled (it’s a workaround bc the UE and gNB would not be able to communicate anymore, a cleaner fix is to move the BWP if needed or things like that)
         self.FFT_SIZE = 1536  
-
+        self.Average_over_frames = 63
+        
         if ota:
             dapp_logger.info(f'Using OTA configuration')
             self.Noise_floor_threshold = 20 # this really depends on the RF conditions and should be carefully calibrated
-            self.Average_over_frames = 63
         else: # Colosseum
             dapp_logger.info(f'Using Colosseum configuration')
             self.Noise_floor_threshold = 53
-            self.Average_over_frames = 63
 
         self.save_iqs = save_iqs
         self.e3_interface.add_callback(self.get_iqs_from_ran)

@@ -9,8 +9,8 @@
 </head>
 
 <body>
-    <div id="magnitude"></div>
     <div id="prbs"></div>
+    <div id="magnitude"></div>
 
     <script>
         var waterfall = [{
@@ -20,13 +20,82 @@
         }];
 
         var waterfallLayout = {
-            title: "Sensed Spectrum",
+            title: "Magnitude of the Sensed Spectrum",
             xaxis: {
                 title: "OFDM Symbols"
             },
             yaxis: {
-                title: "Time samples"
-            }
+                title: "Time samples",
+                autorange: 'reversed'
+            },
+            annotations: [
+                {
+                    x: 1272 / 2,
+                    y: 1.15,
+                    xref: 'x',
+                    yref: 'paper',
+                    text: 'Frequency in GHz',
+                    showarrow: false,
+                    font: {
+                        size: 12
+                    }
+                },  
+                {
+                    x: 10,
+                    y: 1.1,
+                    xref: 'x',
+                    yref: 'paper',
+                    text: '3.5992',
+                    showarrow: false,
+                    font: {
+                        size: 12
+                    }
+                },                {
+                    x: 1272 / 4,
+                    y: 1.1,
+                    xref: 'x',
+                    yref: 'paper',
+                    text: '3.6092',
+                    showarrow: false,
+                    font: {
+                        size: 12
+                    }
+                },
+
+                {
+                    x: 1272 / 2,
+                    y: 1.1,
+                    xref: 'x',
+                    yref: 'paper',
+                    text: '3.6192',
+                    showarrow: false,
+                    font: {
+                        size: 12
+                    }
+                },
+                {
+                    x: 1272 * 3 / 4,
+                    y: 1.1,
+                    xref: 'x',
+                    yref: 'paper',
+                    text: '3.6292',
+                    showarrow: false,
+                    font: {
+                        size: 12
+                    }
+                },
+                {
+                    x: 1272 - 23,
+                    y: 1.1,
+                    xref: 'x',
+                    yref: 'paper',
+                    text: '3.6392',
+                    showarrow: false,
+                    font: {
+                        size: 12
+                    }
+                }
+            ]
         };
 
         var prbs = [{
@@ -38,7 +107,22 @@
         }];
 
         var prbsLayout = {
-            annotations: [{
+            annotations: [
+            //     {
+            //     x: 0,
+            //     y: 1.05,
+            //     xref: 'paper',
+            //     yref: 'paper',
+            //     xanchor: 'left',
+            //     yanchor: 'bottom',
+            //     text: 'The first 76 PRB usually have channels that should not be nulled (OAI constraint)',
+            //     showarrow: false,
+            //     font: {
+            //         size: 12
+            //     },
+            //     align: 'left'
+            // },
+            {
                 x: 1,
                 y: 1.05,
                 xref: 'paper',
@@ -51,7 +135,8 @@
                     size: 12
                 },
                 align: 'right'
-            }],
+            }
+        ],
             title: "PRB Status Grid",
             xaxis: {
                 title: "PRB Index"
@@ -60,7 +145,11 @@
                 title: "Status",
                 showticklabels: false
             },
-            height: 200
+            height: 200,
+            margin: {
+                l: 95,
+                r: 105
+            }
         };
 
         var waterfall_buffer;
@@ -79,13 +168,18 @@
         socket.on('update_plot', function (data) {
             if ('magnitude' in data) {
                 // console.log("Magnitude is: ", data.magnitude)
+                // Preprocess data
+                let part1 = data.magnitude.slice(0, 635);
+                // let ignoredPart = data.magnitude.slice(635, 899);
+                let part3 = data.magnitude.slice(899);
+                let magnitudeToShow = part3.concat(part1).reverse();
                 // Update waterfall plot
-                waterfall_buffer.shift();
-                waterfall_buffer.push(data.magnitude);
+                waterfall_buffer.pop();
+                waterfall_buffer.unshift(magnitudeToShow);
                 Plotly.restyle('magnitude', { z: [waterfall_buffer] });
             }
             else if ('prb_list' in data) {
-                // console.log("PRBs are: ", data.prb_list);
+                console.log("PRBs are: ", data.prb_list);
                 // We get a list of indexes to replace each time
                 prbs_buffer[0].fill(0);
                 data.prb_list.forEach(index => prbs_buffer[0][index] = 1);
