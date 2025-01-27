@@ -9,34 +9,24 @@ __license__ = "MIT"
 
 from abc import ABC
 import argparse
-import queue
-import socket
-import threading
+import multiprocessing
 import time
 import sys
-
 import numpy as np
-np.set_printoptions(threshold=sys.maxsize)
+# np.set_printoptions(threshold=sys.maxsize)
+import e3_interface, e3_logging # used for profiling
+from e3_connector import E3LinkLayer, E3TransportLayer
 from e3_interface import E3Interface
-import logging
+from e3_logging import dapp_logger
 import os
+import yappi
+
 
 LOG_DIR = ('.' if os.geteuid() != 0 else '') + '/logs/'
 
-# Configure logging for DApp
-dapp_logger = logging.getLogger("dapp_logger")
-dapp_logger.setLevel(logging.INFO)
-dapp_handler = logging.FileHandler(f"{LOG_DIR}/dapp.log")
-dapp_handler.setLevel(logging.INFO)
-dapp_formatter = logging.Formatter("[dApp] [%(created)f] %(levelname)s - %(message)s")
-dapp_handler.setFormatter(dapp_formatter)
-dapp_logger.addHandler(dapp_handler)
-
-
 class DApp(ABC):
-
+    DAPP_ID = 1
     e3_interface: E3Interface
-    DAPP_UDS_SOCKET_PATH = "/tmp/dapps/dapp_socket"
 
     ###  Configuration ###
     # gNB runs with BW = 40 MHz, with -E (3/4 sampling)
@@ -48,11 +38,11 @@ class DApp(ABC):
     # Noise floor threshold needs to be calibrated
     # We receive the symbols and average them over some frames, and do thresholding.
 
-    def __init__(self, ota: bool = False, save_iqs: bool = False, control: bool = False, **kwargs):
+    def __init__(self, ota: bool = False, save_iqs: bool = False, control: bool = False, link: str = 'posix', transport:str = 'uds', **kwargs):
         super().__init__()
         self.profile = kwargs.get('profile', False)
-        self.e3_interface = E3Interface(ota=ota, profile=self.profile)
-        self.stop_event = threading.Event()
+        self.e3_interface = E3Interface(link=link, transport=transport, profile=self.profile)
+        self.stop_event = multiprocessing.Event()
 
         self.bw = 40.08e6  # Bandwidth in Hz
         self.center_freq = 3.6192e9 # Center frequency in Hz
@@ -68,6 +58,8 @@ class DApp(ABC):
         else: # Colosseum
             dapp_logger.info(f'Using Colosseum configuration')
             self.Noise_floor_threshold = 53
+
+        dapp_logger.info(f'Using {link} and {transport}')
 
         self.save_iqs = save_iqs
         self.e3_interface.add_callback(self.get_iqs_from_ran)
@@ -87,42 +79,32 @@ class DApp(ABC):
 
         if self.energyGui:
             from energy_plotter import EnergyPlotter
-            self.sig_queue = queue.Queue() 
+            self.sig_queue = multiprocessing.Queue() 
             self.energyPlotter = EnergyPlotter(self.FFT_SIZE, bw=self.bw, center_freq=self.center_freq) 
 
         if self.iqPlotterGui:
             from iq_plotter import IQPlotter
-            self.iq_queue = queue.Queue() 
+            self.iq_queue = multiprocessing.Queue() 
             iq_size = self.FFT_SIZE * 2 # double the size of ofdm_symbol_size since real and imaginary parts are interleaved
             self.iqPlotter = IQPlotter(buffer_size=500, iq_size=iq_size, bw=self.bw, center_freq=self.center_freq)    
 
         if self.demoGui:
             from demo_plotter import DemoGui
-            self.demo_queue = queue.Queue()
+            self.demo_queue = multiprocessing.Queue()
             iq_size = self.FFT_SIZE * 2 # double the size of ofdm_symbol_size since real and imaginary parts are interleaved
             self.demo = DemoGui(buffer_size=100, iq_size=iq_size) 
 
-        if self.control:            
-            # Creating a client to send PRB updates and apply control
-            self.prb_updates_socket = None
-            socket_type = socket.AF_UNIX if ota else socket.AF_INET
-            connection_target = self.DAPP_UDS_SOCKET_PATH if ota else ("127.0.0.1", 9999)
-            dapp_logger.info(f"{'Control socket is using AF_UNIX' if socket_type == 1 else 'AF_INET'} {connection_target}")
-            
-            while self.prb_updates_socket is None:
-                try:
-                    self.prb_updates_socket = socket.socket(socket_type, socket.SOCK_STREAM)
-                    self.prb_updates_socket.connect(connection_target)
-                except (FileNotFoundError, ConnectionRefusedError):
-                    self.prb_updates_socket = None
-                    dapp_logger.info("gNB server for control is not up yet, sleeping for 5 seconds")
-                    time.sleep(5)
-
-            self.prb_queue = queue.Queue() 
-            self.control_thread = threading.Thread(target=self.prb_update_task)
-            self.control_thread.start() 
+    def setup_connection(self):
+        while True:    
+            response = self.e3_interface.send_setup_request(self.DAPP_ID)
+            dapp_logger.info(f'E3 Setup Response: {response}')
+            if response:
+               break
+            dapp_logger.warning('RAN refused setup or dApp was not able to connect, waiting 2 secs')
+            time.sleep(2)
 
     def get_iqs_from_ran(self, data):
+        dapp_logger.debug(f'Triggered callback')
         if self.save_iqs:
             dapp_logger.debug("I will write on the logfile iqs")
             self.save_counter += 1
@@ -131,8 +113,10 @@ class DApp(ABC):
             if self.save_counter > self.limit_per_file:
                 self.iq_save_file.close()
                 self.iq_save_file = open(f"{LOG_DIR}/iqs_{int(time.time())}.bin", "ab")
-
-        iq_arr = np.frombuffer(data, np.int16)
+               
+        iq_arr = np.frombuffer(data, dtype=np.int16)
+        dapp_logger.debug(f"Shape of iq_arr {iq_arr.shape}")
+        
         if self.iqPlotterGui:
             self.iq_queue.put(iq_arr)
 
@@ -142,7 +126,8 @@ class DApp(ABC):
         if self.control:
             dapp_logger.debug("Start control operations")
             iq_comp = iq_arr[::2] + iq_arr[1::2] * 1j
-            abs_iq = abs(iq_comp).astype(float)
+            dapp_logger.debug(f"Shape of iq_comp {iq_comp.shape}")
+            abs_iq = np.abs(iq_comp).astype(float)
             dapp_logger.debug(f"After iq division self.abs_iq_av: {self.abs_iq_av.shape} abs_iq: {abs_iq.shape}")
             self.abs_iq_av += abs_iq
             self.control_count += 1
@@ -155,11 +140,12 @@ class DApp(ABC):
                 abs_iq_av_db =  20 * np.log10(1 + (self.abs_iq_av/(self.Average_over_frames)))
                 abs_iq_av_db_offset_correct = np.append(abs_iq_av_db[self.First_carrier_offset:self.FFT_SIZE],abs_iq_av_db[0:self.First_carrier_offset])
                 dapp_logger.info(f'--- AVG VALUES ----')
-                dapp_logger.info(f'abs_iq_av_db: {abs_iq_av_db.mean()}')
                 dapp_logger.info(f'abs_iq_av_db_offset_correct: {abs_iq_av_db_offset_correct.mean()}')
                 dapp_logger.info(f'--- MAX VALUES ----')
-                dapp_logger.info(f'abs_iq_av_db: {abs_iq_av_db.max()}')
                 dapp_logger.info(f'abs_iq_av_db_offset_correct: {abs_iq_av_db_offset_correct.max()}')
+                # last_5_max_abs_iq_av_db_offset_correct = np.sort(abs_iq_av_db_offset_correct)[-20:]
+                # dapp_logger.info(f'Last 20 max values (abs_iq_av_db_offset_correct): {last_5_max_abs_iq_av_db_offset_correct}')
+
 
                 # Blacklisting based on the noise floor threshold
                 f_ind = np.arange(self.FFT_SIZE)
@@ -169,9 +155,17 @@ class DApp(ABC):
                 prb_blk_list = np.unique((np.floor(blklist_sub_carrier/self.Num_car_prb))).astype(np.uint16)
                 dapp_logger.info(f'prb_blk_list: {prb_blk_list}')
                 prb_blk_list = prb_blk_list[prb_blk_list > self.prb_thrs]
-                dapp_logger.info(f"Blacklisted prbs: {prb_blk_list}")
+                # prb_blk_list = np.array([76, 77,  78,  79, 80, 81, 82, 83], dtype=np.uint16) # 76, 77,  78,  79, 80, 81, 82, 83
+                # prb_blk_list = np.arange(start=76, stop=140, dtype=np.uint16)
+                dapp_logger.info(f"Blacklisted prbs ({prb_blk_list.size}): {prb_blk_list}")
                 prb_new = prb_blk_list.view(prb_blk_list.dtype.newbyteorder('>'))
-                self.prb_queue.put(((prb_new, prb_blk_list.size)))
+                
+                # Create the payload
+                size = prb_blk_list.size.to_bytes(2,'little')
+                prbs_to_send = prb_new.tobytes(order="C")
+                
+                # Schedule the delivery
+                self.e3_interface.schedule_control(size+prbs_to_send)
 
                 if self.energyGui:
                     self.sig_queue.put(abs_iq_av_db)
@@ -179,35 +173,9 @@ class DApp(ABC):
                 if self.demoGui:
                     self.demo_queue.put(("prb_list", prb_blk_list))
 
-                # reset the variables
+                # Reset the variables
                 self.abs_iq_av = np.zeros(self.FFT_SIZE)
                 self.control_count = 1  
-
-    def prb_update(self, prb_blk_list, n):
-        array1 = n.to_bytes(2, "little")
-        array2 = prb_blk_list.tobytes(order="C")
-        self.prb_updates_socket.send(array1 + array2)
-
-    def prb_update_task(self):
-        if not self.control:
-            return
-
-        if self.profile:
-            self.prb_profiler = cProfile.Profile()
-            self.prb_profiler.enable()
-
-        while not self.stop_event.is_set():
-            try:
-                prb_blk_list, n = self.prb_queue.get(timeout=1.5)
-                self.prb_update(prb_blk_list, n)
-            except queue.Empty:
-                dapp_logger.debug("Empty queue")
-
-        if self.profile:
-            self.prb_profiler.disable()
-            with open(f"{LOG_DIR}/prb_update.txt", "w") as f:
-                p = pstats.Stats(self.prb_profiler, stream=f)
-                p.sort_stats("cumtime").print_stats()
 
     def control_loop(self):
         dapp_logger.debug(f"Start control loop")
@@ -224,19 +192,13 @@ class DApp(ABC):
                     self.demo.process_iq_data(message)
         except KeyboardInterrupt:
             dapp_logger.error("Keyboard interrupt, closing dApp")
-            self.stop_event.set()
+            self.stop()
 
     def stop(self):
         dapp_logger.info('Stop of the dApp')
         self.stop_event.set()
-        
-        if self.control:
-            # close connection socket with the client
-            self.control_thread.join()
-            self.prb_updates_socket.close()
-            dapp_logger.info("Connection to client for control closed")
 
-        self.e3_interface.stop_server()
+        self.e3_interface.terminate_connections()
         dapp_logger.info("Stopped server")
         
         if self.save_iqs:
@@ -245,15 +207,25 @@ class DApp(ABC):
         if self.demoGui:
             self.demo.stop()
 
-def stop_program(dapp):
+def stop_program(time_to_wait, dapp: DApp):
+    time.sleep(time_to_wait)
+    print("Stop is called")
     dapp.stop()
-    print("Test completed.")
+    time.sleep(0.5) # to allow proper closure of the dApp threads, irrelevant to profiling
+    print("Test completed")
 
-def main(args, time: float = 400.0):
-    dapp = DApp(ota=args.ota, save_iqs=args.save_iqs, control=args.control, profile=args.profile, energyGui=args.energy_gui, iqPlotterGui=args.iq_plotter_gui, demoGui=args.demo_gui)
+def main(args, time_to_wait: float = 60.0):
+    # with open(f"{LOG_DIR}/busy.txt", "w") as f:
+    #     f.close()
+    
+    dapp = DApp(ota=args.ota, save_iqs=args.save_iqs, control=args.control, profile=args.profile, 
+                link=args.link, transport=args.transport,
+                energyGui=args.energy_gui, iqPlotterGui=args.iq_plotter_gui, demoGui=args.demo_gui)
 
+    dapp.setup_connection()
+    
     if args.timed:
-        timer = threading.Timer(time, stop_program, [dapp])
+        timer = multiprocessing.Process(target=stop_program, args=(time_to_wait, dapp))
         timer.start()
     else:
         timer = None
@@ -262,11 +234,37 @@ def main(args, time: float = 400.0):
         dapp.control_loop()
     finally:
         if args.timed:
-            timer.cancel()
+            timer.kill()
+
+    if args.profile:
+        time.sleep(2.5)
+
+        with open(f"{LOG_DIR}/busy.txt", "r") as file:
+            numbers = [float(line.strip()) for line in file]
+        average_busy_wait = sum(numbers) / len(numbers)
+
+        with open("f{LOG_DIR}/func_stats_inbound.txt", "r") as file:
+            lines = file.readlines()
+            print(lines[4].strip())
+            receive_msg = lines[5].strip()
+            handle = lines[6].strip()
+
+        with open("f{LOG_DIR}/func_stats_outbound.txt", "r") as file:
+            lines = file.readlines()
+            control_act = lines[5].strip()
+            send_msg = lines[6].strip()
+
+        print(receive_msg)
+        print(f"Average busy wait: {average_busy_wait:>30}")
+        print(handle)
+        print(control_act)
+        print(send_msg)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="dApp example")
     parser.add_argument('--ota', action='store_true', default=False, help="Specify if this is OTA or on Colosseum")
+    parser.add_argument('--link', type=str, default='posix', choices=[layer.value for layer in E3LinkLayer], help="Specify the link layer to be used")
+    parser.add_argument('--transport', type=str,  default='uds', choices=[layer.value for layer in E3TransportLayer], help="Specify the transport layer to be used")
     parser.add_argument('--save-iqs', action='store_true', default=False, help="Specify if this is data collection run or not. In the first case I/Q samples will be saved")
     parser.add_argument('--control', action='store_true', default=False, help="Set whether to perform control of PRB")
     parser.add_argument('--energy-gui', action='store_true', default=False, help="Set whether to enable the energy GUI")
@@ -277,14 +275,28 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    if args.profile:
-        import cProfile
-        import pstats
-        cProfile.run('main(args)', 'dapp_profile')
+    print("Start dApp")
 
-        with open(f"{LOG_DIR}/dapp.txt", "w") as f:
-            p = pstats.Stats('dapp_profile', stream=f)
-            p.sort_stats('cumtime').print_stats()
-        os.remove('dapp_profile')
+    if args.profile:
+        yappi.set_clock_type("wall")
+        yappi.start() 
+        main(args)
+
+        current_module = sys.modules[__name__]
+        with open(f"{LOG_DIR}/func_stats_dapp.txt", "w") as f:
+            yappi.get_func_stats(
+                filter_callback=lambda x: yappi.module_matches(
+                    x, [current_module, e3_interface, e3_logging]
+                )
+            ).strip_dirs().sort("ncall", sort_order="desc").print_all(
+                f,
+                columns={
+                    0: ("name", 60),
+                    1: ("ncall", 10),
+                    2: ("tsub", 8),
+                    3: ("ttot", 8),
+                    4: ("tavg", 8),
+                },
+            )
     else:
         main(args)

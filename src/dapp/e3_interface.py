@@ -1,140 +1,204 @@
 import os
-import socket
+import multiprocessing
+import queue
+import sys
 import threading
-import logging
+import e3_connector, e3_logging
+from e3_connector import E3Connector
+from e3_logging import e3_logger
+import asn1tools
+import yappi
 
 LOG_DIR = ('.' if os.geteuid() != 0 else '') + '/logs/'
-# Configure logging for E3Interface
-e3_logger = logging.getLogger("e3_logger")
-e3_logger.setLevel(logging.INFO)
-e3_handler = logging.FileHandler(f"{LOG_DIR}/e3.log")
-e3_handler.setLevel(logging.INFO)
-e3_formatter = logging.Formatter("[E3] [%(created)f] %(levelname)s - %(message)s")
-e3_handler.setFormatter(e3_formatter)
-e3_logger.addHandler(e3_handler)
 
 
 class E3Interface:
     _instance = None
     _lock = threading.Lock()
-    E3_UDS_SOCKET_PATH = "/tmp/dapps/e3_socket"
 
-    def __new__(cls, ota: bool, *args, **kwargs):
+    def __new__(cls, *args, **kwargs):
         with cls._lock:
             if not cls._instance:
                 cls._instance = super(E3Interface, cls).__new__(cls)
         return cls._instance
 
-    def __init__(self, ota: bool = False, *args, **kwargs):
+    def __init__(self, *args, **kwargs):
         if not hasattr(self, "initialized"):
             self.callbacks = []
-            self.stop_event = threading.Event()
+            self.stop_event = multiprocessing.Event()
             self.initialized = True
 
-            self.profile = kwargs.get('profile', False)
-            if self.profile:
-                import cProfile
-                self.profiler = cProfile.Profile()
-                e3_logger.info('Profiling the E3 interface')
-            else:
-                e3_logger.info('Not profiling')
+            if not hasattr(kwargs, "profile"):
+                self.profile = kwargs.get("profile", False)
 
-            self.ota = ota
-            self._start_server()
+            # Create an E3Connector instance based on the configuration
+            self.e3_connector = E3Connector.setup_connector(kwargs.get('link', ''), kwargs.get('transport', '')) 
+            
+            e3_logger.info(f"Endpoint setup {self.e3_connector.setup_endpoint}")
+            e3_logger.info(f"Endpoint inbound {self.e3_connector.inbound_endpoint}")
+            e3_logger.info(f"Endpoint outbound {self.e3_connector.outbound_endpoint}")
 
-    def _start_server(self):
-        self.server_thread = threading.Thread(target=self._e3_server)
-        self.server_thread.daemon = True
-        self.server_thread.start()
+            self.defs = asn1tools.compile_files(os.path.join(os.path.dirname(os.path.realpath(__file__)), "../../e3protocol/defs/e3.asn"), codec="per") 
+            self.outbound_queue = multiprocessing.Queue()
+    
+    def send_setup_request(self, dappId: int = 1) -> bool:
+        e3_logger.info("Start setup request")
+        payload = self.create_setup_request(dappId)
+        try:
+            response = self.e3_connector.send_setup_request(payload)
+        except ConnectionRefusedError as e:
+            e3_logger.error(f"Unable to connect to E3 setup endpoint, connection refused: {e}")
+            return False
 
-    def _e3_server(self):
-        if self.ota:
-            e3_logger.info('I will run OTA with Unix Domain sockets')
-            if os.path.exists(self.E3_UDS_SOCKET_PATH):
-                os.remove(self.E3_UDS_SOCKET_PATH)
-            socket_type = socket.AF_UNIX 
-            connection_target = self.E3_UDS_SOCKET_PATH
+        e3_logger.info("Setup response received")
+        pdu = self.defs.decode('E3-PDU', response)
+        if pdu[0] == "setupResponse":
+            e3_setup_response = pdu[1]
+            e3_logger.info(e3_setup_response)
+            # Either here or in setup connections we need E3 sub request and response
+            self.setup_connections()
+            return e3_setup_response['responseCode'] == 'positive'
         else:
-            e3_logger.info('I will run on Colosseum with TCP sockets')
-            socket_type = socket.AF_INET
-            connection_target = ("127.0.0.1", 9990)
+            return False
 
-        sock = socket.socket(socket_type, socket.SOCK_STREAM)
-        sock.bind(connection_target)
+    def setup_connections(self):
+        # Two connections, one for the inbound the other for the outbound
+        self.inbound_process =  multiprocessing.Process(target=self._inbound_connection)
+        self.outbound_process = multiprocessing.Process(target=self._outbound_connection)
+        
+        self.inbound_process.start()
+        self.outbound_process.start()    
 
-        if self.ota:
-            os.chmod(self.E3_UDS_SOCKET_PATH, 0o770)
+    def _inbound_connection(self):
+        """
+        Inbound is for all the messages that are coming from the RAN after the initial setup 
+        """
+        if self.profile:
+            yappi.set_clock_type("wall")
+            yappi.start() 
 
-        sock.listen(5)
-        e3_logger.info(f"E3 Server listening on {connection_target}")
+        e3_logger.info(f'Start inbound connection')
+        self.e3_connector.setup_inbound_connection()
+        e3_logger.info(f'Start inbound loop')
 
         try:
             while not self.stop_event.is_set():
-                sock.settimeout(5.0)  # Set timeout to periodically check stop_event
-                try:
-                    conn, _ = sock.accept()
-                    threading.Thread(target=self._handle_client, args=(conn,)).start()
-                except socket.timeout:
-                    # e3_logger.debug("Timeout socket")
-                    pass
-        finally:
-            sock.close()
-            e3_logger.info("E3 server stopped.")
-            if self.ota:
-                os.remove(self.E3_UDS_SOCKET_PATH)
-
-    # This should be the actual E3 data handling, for this demo we use the one with Rajeev format
-    # def _handle_client(self, conn):
-    #     with conn:
-    #         while not self.stop_event.is_set():
-    #             try:
-    #                 conn.settimeout(1.0)  # Set timeout to periodically check stop_event
-    #                 data = conn.recv(1024)
-    #                 if not data:
-    #                     break
-    #                 self._handle_incoming_data(data)
-    #             except socket.timeout:
-    #                 continue
-
-    # message format: length of the buffer (4 bytes) + buffer
-    def _handle_client(self, conn):
-        if self.profile:
-            self.profiler.enable()
-
-        try:
-            while True:
-                sense_symbol = b""
-                num_bytes = conn.recv(4)
-                if not num_bytes:
+                data = self.e3_connector.receive()
+                if not data:
+                    e3_logger.error(f'No data received, connection closed, end')
                     break
-                buf_size = int.from_bytes(num_bytes, "big")
-                e3_logger.debug(f"I expect {buf_size}")
-                while buf_size > 0:
-                    iq_buf = conn.recv(buf_size)
-                    if not iq_buf:
-                        break
-                    sense_symbol += iq_buf
-                    buf_size -= len(iq_buf)
-                self._handle_incoming_data(sense_symbol)
-        except Exception as e:
-            e3_logger.error(f"Error handling client: {e}")
-        finally:
-            if self.profile:
-                self.profiler.disable()
+                e3_logger.debug(f'Received data size: {len(data)}')
+                e3_logger.debug(data.hex())
+                pdu = self.defs.decode("E3-PDU", data)
+                e3_logger.debug(f"Data decoded")
+                match pdu[0]:
+                    case "indicationMessage":
+                        e3_indication_message = pdu[1]
+                        protocolData = e3_indication_message['protocolData']
+                        e3_logger.debug(protocolData)
+                        e3_logger.debug(f"Indication message protocolData {len(protocolData)}")
+                        self._handle_incoming_data(protocolData)
 
-            e3_logger.debug("Close connection")
-            conn.close()
+                    case "xAppControlAction":
+                        e3_xapp_control_action = pdu[1]
+                        raise NotImplementedError()
+
+                    case _:
+                        raise ValueError("Unrecognized value ", pdu)
+                    
+        except Exception as e:
+            e3_logger.error(f"Error in inbound thread: {e}")
+            self.stop_event.set()
+        finally:
+            e3_logger.info("Close inbound connection")
+        
+
+        if self.profile:
+            current_module = sys.modules[__name__]
+            with open(f"{LOG_DIR}/func_stats_inbound.txt", "w") as f:
+                yappi.get_func_stats(
+                    filter_callback=lambda x: yappi.module_matches(
+                        x, [current_module, e3_connector, e3_logging, asn1tools]
+                    )
+                ).strip_dirs().sort("ncall", sort_order="desc").print_all(
+                    f,
+                    columns={
+                        0: ("name", 60),
+                        1: ("ncall", 10),
+                        2: ("tsub", 8),
+                        3: ("ttot", 8),
+                        4: ("tavg", 8),
+                    },
+                )
+
+    def _outbound_connection(self):
+        """
+        Outbound is for all the messages that should go to the RAN after the initial setup 
+        Messages are dApp Control Action and dApp Report Message
+        """
+        if self.profile:
+            yappi.set_clock_type("wall")
+            yappi.start() 
+
+        e3_logger.info(f'Start outbound connection')
+        self.e3_connector.setup_outbound_connection()
+
+        e3_logger.info(f'Start outbound loop')
+        try:
+            while not self.stop_event.is_set():
+                try:
+                    msg, data = self.outbound_queue.get(timeout=0.5)
+                except queue.Empty:
+                    continue
+                
+                e3_logger.debug(f"Outbound queue has got '{msg}', {data}")
+                
+                match msg:
+                    case "control":
+                        payload = self.create_control_action(data)
+                    case "report":
+                        payload = self.create_dapp_report(data)
+
+                    case _:
+                        raise ValueError("Unrecognized value ", msg)
+
+                e3_logger.debug(f"Send the pdu encoded {payload}")
+                self.e3_connector.send(payload)
+
+        except Exception as e:
+            e3_logger.error(f"Error outbound thread: {e}")
+            self.stop_event.set()
+        finally:
+            e3_logger.info("Close outbound connection")
+        
+        if self.profile:
+            current_module = sys.modules[__name__]
+            with open(f"{LOG_DIR}/func_stats_outbound.txt", "w") as f:
+                yappi.get_func_stats(
+                    filter_callback=lambda x: yappi.module_matches(
+                        x, [current_module, e3_connector, e3_logging, asn1tools]
+                    )
+                ).strip_dirs().sort("ncall", sort_order="desc").print_all(
+                    f,
+                    columns={
+                        0: ("name", 60),
+                        1: ("ncall", 10),
+                        2: ("tsub", 8),
+                        3: ("ttot", 8),
+                        4: ("tavg", 8),
+                    },
+                )
 
     def _handle_incoming_data(self, data):
-        if self.profile:
-            self.profiler.enable()
-        try:
-            for callback in self.callbacks:
-                e3_logger.debug("Launch callback")
-                callback(data)
-        finally:
-            if self.profile:
-                self.profiler.disable()
+        for callback in self.callbacks:
+            e3_logger.debug("Launch callback")
+            callback(data)
+                
+    def schedule_control(self, payload: bytes):
+        self.outbound_queue.put(('control', payload))
+    
+    def schedule_report(self, payload: bytes):
+        self.outbound_queue.put(('report', payload))
 
     def add_callback(self, callback):
         if callback not in self.callbacks:
@@ -146,19 +210,35 @@ class E3Interface:
             e3_logger.debug("Remove callback")
             self.callbacks.remove(callback)
 
-    def stop_server(self):
-        e3_logger.debug("Stop event")
+    def terminate_connections(self):
+        e3_logger.info("Stop event")
         self.stop_event.set()
-        self.server_thread.join()
-        if self.profile:
-            import pstats
+        
+        if hasattr(self, "inbound_process"):
+            self.inbound_process.join()
+        if hasattr(self, "outbound_process"):
+            self.outbound_process.join()
 
-            with open(f"{LOG_DIR}/e3_profile.txt", "w") as f:
-                p = pstats.Stats(self.profiler, stream=f)
-                p.sort_stats('cumtime').print_stats()
+        self.e3_connector.dispose()
+  
+    def create_control_action(self, actionData: bytes):
+        control_message = ("controlAction", {"actionData": actionData})
+        payload = self.defs.encode("E3-PDU", control_message)
+        return payload
+
+    def create_dapp_report(self, reportData: bytes):
+        dapp_report_message = ("dAppReport", {"reportData": reportData})
+        payload = self.defs.encode("E3-PDU", dapp_report_message)
+        return payload
+        
+    def create_setup_request(self, ranId: int = 1, ranFunctions: list = []):
+        setup_request_message = ("setupRequest", {"ranIdentifier": ranId, "ranFunctionsList": ranFunctions})
+        payload = self.defs.encode("E3-PDU", setup_request_message)
+        return payload
 
     def __del__(self):
-        self.stop_server()
+        if not self.stop_event.is_set():
+           self.terminate_connections()
 
 if __name__ == "__main__":
     # Usage Example
@@ -173,4 +253,4 @@ if __name__ == "__main__":
     e3_interface.remove_callback(sample_callback)
 
     # Stop the server (for cleanup or at program exit)
-    e3_interface.stop_server()
+    e3_interface.terminate_connections()

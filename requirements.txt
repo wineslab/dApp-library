@@ -1,5 +1,5 @@
+asn1tools
 typing_extensions
-scikit-learn
 numpy
-torch
-matplotlib
+pyzmq
+yappi

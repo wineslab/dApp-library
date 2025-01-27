@@ -13,35 +13,53 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 #==================================================================================
+FROM ubuntu:22.04
 
-FROM ubuntu:22.04 as base
-
-
-# Add you ghp_ generate token as coommand argument
-ARG token=fake
-
-# Common Instructions
-RUN mkdir -p /workspace
+# Set timezone
 ENV TZ=America/New_York
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
-RUN apt-get update && apt-get install -y wget \
-                                        build-essential libc6-dev linux-libc-dev\
-                                        git \
-                                        cmake autoconf automake libtool bison flex \
-                                        libboost-all-dev tmux python3 curl \
-                                        ninja-build pipenv \ 
-                                        htop nano swig
+
+# Install required packages
+RUN apt-get update && apt-get install -y htop build-essential cmake automake libtool bison \
+    flex git python3 python3-dev swig libsctp-dev
+
+# Set the working directory
 WORKDIR /workspace
 
-RUN ldconfig
+# Clone the asn1c repository and build it
+RUN git clone https://github.com/nokia/asn1c 
+WORKDIR /workspace/asn1c 
 
-RUN git clone -b enviroment https://${token}@github.com/wineslab/ns-o-ran-network-gym /workspace/ns-o-ran-network-gym
-WORKDIR /workspace/ns-o-ran-network-gym
-RUN pip3 install -r requirements.txt
+RUN test -f configure || autoreconf -iv
+RUN ./configure
+RUN make
+RUN make install
 
-# Cleanup
-RUN rm -rf /var/lib/apt/lists/*
-
+# Set the working directory for building the project
 WORKDIR /workspace
+
+# Copy the ASN.1 file, SWIG interface file, and C client source code into the container
+COPY e3.asn /workspace/
+COPY e3.i /workspace/
+COPY client.c /workspace/
+
+# Create an output directory for the compiled files
+RUN mkdir -p /workspace/output
+
+# Compile the ASN.1 files
+RUN mkdir -p /workspace/output/asn1c_output && \
+    asn1c -fcompound-names -gen-PER -no-gen-OER -no-gen-example -D /workspace/output/asn1c_output e3.asn
+
+# Compile the C code for ASN.1
+RUN gcc -c -o /workspace/output/asn1c_output/*.o /workspace/output/asn1c_output/*.c
+
+# Generate the SWIG wrapper
+RUN swig -python -o /workspace/output/e3_wrap.c e3.i
+
+# Compile the SWIG wrapper and ASN.1 C code into a shared object
+RUN gcc -shared -o /workspace/output/_e3.so /workspace/output/e3_wrap.c /workspace/output/asn1c_output/*.o -I/usr/include/python3.8
+
+# Compile the C client
+RUN gcc -o /workspace/output/client client.c /workspace/output/asn1c_output/*.o -lsctp
 
 CMD ["/bin/bash"]

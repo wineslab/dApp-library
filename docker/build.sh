@@ -1,9 +1,6 @@
 #!/bin/bash
 
-# This file can be use to perform a build standalone of the ns-3 container
+echo "this file and the docker is not currently working and may be not needed"
+# docker build -t e3_project .
+# docker run -it -v $(pwd)/output:/workspace/output e3_project
 
-docker build --build-arg token=fake -t ns-o-ran-online-env -f Dockerfile .
-docker stop ns-o-ran-online-env
-docker rm ns-o-ran-online-env
-docker run -d -it --name ns-o-ran-online-env ns-o-ran-online-env
-docker exec -it ns-o-ran-online-env bash
