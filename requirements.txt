@@ -1,0 +1,5 @@
+asn1tools
+typing_extensions
+numpy
+pyzmq
+yappi

@@ -1,0 +1,54 @@
+@startuml
+!theme mars
+skinparam backgroundColor transparent
+left to right direction
+skinparam linetype ortho
+!define AbstractClass class
+hide empty members
+hide circles
+
+class EnergyPlotter {
+    -- Attributes --
+    - FFT_SIZE : int
+    - bw : float
+    - center_freq : float
+    - fig, ax, line1 : matplotlib.pyplot objects
+    -- Methods --
+    + __init__(fft_size: int, bw: float, center_freq: float)
+    + initialize_plot(fft_size: int)
+    + update_plot(new_data)
+    + process_iq_data(abs_iq_av_db)
+}
+
+class IQPlotter {
+    -- Attributes --
+    - buffer_size : int
+    - iq_size : int
+    - buffer : np.ndarray
+    - sampling_threshold : int
+    - fig, ax, img : matplotlib.pyplot objects
+    -- Methods --
+    + __init__(buffer_size: int, iq_size: int, bw: float, center_freq: float)
+    + initialize_plot(iq_shape)
+    + update_plot(new_data)
+    + process_iq_data(iq_data)
+}
+
+class DemoGui {
+    -- Attributes --
+    - BUFFER_SIZE : int
+    - iq_size : int
+    - bw : float
+    - center_freq : float
+    - sampling_threshold : int
+    - socketio : SocketIO
+    -- Methods --
+    + __init__(buffer_size: int, iq_size: int, bw: float, center_freq: float)
+    + _initialize_plot()
+    + process_iq_data(message)
+    + stop()
+}
+
+DemoGui --> IQPlotter : "contains"
+DemoGui --> EnergyPlotter : "contains"
+@enduml

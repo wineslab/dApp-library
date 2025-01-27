@@ -158,3 +158,25 @@ cython_debug/
 #  and can be added to the global gitignore or merged into this file.  For a more nuclear
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
+
+e3protocol/asn1c_output/
+e3protocol/asn1c_compiled_output/
+e3protocol/client/client
+
+# Default ignored files
+/shelf/
+/workspace.xml
+# Editor-based HTTP Client requests
+/httpRequests/
+# Datasource local storage ignored files
+/dataSources/
+/dataSources.local.xml
+.idea/
+.vscode/
+e3protocol/server/e3_wrap.c
+e3protocol/server/e3.py
+e3protocol/sctp_traffic.pcap
+logs/**
+dapp_profile
+profile_output.txt
+e3protocol/client/test

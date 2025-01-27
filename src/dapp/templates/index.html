@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Real-Time Plots</title>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <script src="//cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+</head>
+
+<body>
+    <div id="prbs"></div>
+    <div id="magnitude"></div>
+
+    <script>
+        var waterfall = [{
+            z: [],
+            type: 'heatmap',
+            colorscale: "Viridis"
+        }];
+
+        var waterfallLayout = {
+            title: "Magnitude of the Sensed Spectrum",
+            xaxis: {
+                title: "OFDM Symbols"
+            },
+            yaxis: {
+                title: "Time samples",
+                autorange: 'reversed'
+            },
+            annotations: [
+                {
+                    x: 1272 / 2,
+                    y: 1.15,
+                    xref: 'x',
+                    yref: 'paper',
+                    text: 'Frequency in GHz',
+                    showarrow: false,
+                    font: {
+                        size: 12
+                    }
+                },  
+                {
+                    x: 10,
+                    y: 1.1,
+                    xref: 'x',
+                    yref: 'paper',
+                    text: '3.5992',
+                    showarrow: false,
+                    font: {
+                        size: 12
+                    }
+                },                {
+                    x: 1272 / 4,
+                    y: 1.1,
+                    xref: 'x',
+                    yref: 'paper',
+                    text: '3.6092',
+                    showarrow: false,
+                    font: {
+                        size: 12
+                    }
+                },
+
+                {
+                    x: 1272 / 2,
+                    y: 1.1,
+                    xref: 'x',
+                    yref: 'paper',
+                    text: '3.6192',
+                    showarrow: false,
+                    font: {
+                        size: 12
+                    }
+                },
+                {
+                    x: 1272 * 3 / 4,
+                    y: 1.1,
+                    xref: 'x',
+                    yref: 'paper',
+                    text: '3.6292',
+                    showarrow: false,
+                    font: {
+                        size: 12
+                    }
+                },
+                {
+                    x: 1272 - 23,
+                    y: 1.1,
+                    xref: 'x',
+                    yref: 'paper',
+                    text: '3.6392',
+                    showarrow: false,
+                    font: {
+                        size: 12
+                    }
+                }
+            ]
+        };
+
+        var prbs = [{
+            type: 'heatmap',
+            colorscale: [[0, 'green'], [1, 'red']],
+            zmin: 0,
+            zmax: 1,
+            showscale: false
+        }];
+
+        var prbsLayout = {
+            annotations: [
+            //     {
+            //     x: 0,
+            //     y: 1.05,
+            //     xref: 'paper',
+            //     yref: 'paper',
+            //     xanchor: 'left',
+            //     yanchor: 'bottom',
+            //     text: 'The first 76 PRB usually have channels that should not be nulled (OAI constraint)',
+            //     showarrow: false,
+            //     font: {
+            //         size: 12
+            //     },
+            //     align: 'left'
+            // },
+            {
+                x: 1,
+                y: 1.05,
+                xref: 'paper',
+                yref: 'paper',
+                xanchor: 'right',
+                yanchor: 'bottom',
+                text: '<span style="color: green; font-weight: bold;">Green</span> = Usable, <span style="color: red; font-weight: bold;">Red</span> = Blocked',
+                showarrow: false,
+                font: {
+                    size: 12
+                },
+                align: 'right'
+            }
+        ],
+            title: "PRB Status Grid",
+            xaxis: {
+                title: "PRB Index"
+            },
+            yaxis: {
+                title: "Status",
+                showticklabels: false
+            },
+            height: 200,
+            margin: {
+                l: 95,
+                r: 105
+            }
+        };
+
+        var waterfall_buffer;
+        var prbs_buffer;
+
+        var socket = io.connect('http://' + document.domain + ':' + location.port);
+        socket.on('initialize_plot', function (data) {
+            waterfall_buffer = data.magnitude;
+            waterfall[0].z.push(waterfall_buffer);
+            prbs_buffer = [new Array(data.num_prbs).fill(0)];
+            prbs[0].z = prbs_buffer;
+            Plotly.newPlot('magnitude', waterfall, waterfallLayout);
+            Plotly.newPlot('prbs', prbs, prbsLayout);
+        });
+
+        socket.on('update_plot', function (data) {
+            if ('magnitude' in data) {
+                // console.log("Magnitude is: ", data.magnitude)
+                // Preprocess data
+                let part1 = data.magnitude.slice(0, 635);
+                // let ignoredPart = data.magnitude.slice(635, 899);
+                let part3 = data.magnitude.slice(899);
+                let magnitudeToShow = part3.concat(part1).reverse();
+                // Update waterfall plot
+                waterfall_buffer.pop();
+                waterfall_buffer.unshift(magnitudeToShow);
+                Plotly.restyle('magnitude', { z: [waterfall_buffer] });
+            }
+            else if ('prb_list' in data) {
+                console.log("PRBs are: ", data.prb_list);
+                // We get a list of indexes to replace each time
+                prbs_buffer[0].fill(0);
+                data.prb_list.forEach(index => prbs_buffer[0][index] = 1);
+                Plotly.restyle('prbs', { z: [prbs_buffer] });
+            } else {
+                console.error('Error unknown values in data ', data);
+            }
+        });
+
+    </script>
+</body>
+
+</html>
