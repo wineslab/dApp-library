@@ -1,16 +1,10 @@
 import os
 import multiprocessing
 import queue
-import sys
 import threading
-import e3_connector, e3_logging
-from e3_connector import E3Connector
-from e3_logging import e3_logger
+from .e3_connector import E3Connector
+from .e3_logging import e3_logger
 import asn1tools
-import yappi
-
-LOG_DIR = ('.' if os.geteuid() != 0 else '') + '/logs/'
-
 
 class E3Interface:
     _instance = None
@@ -28,9 +22,6 @@ class E3Interface:
             self.stop_event = multiprocessing.Event()
             self.initialized = True
 
-            if not hasattr(kwargs, "profile"):
-                self.profile = kwargs.get("profile", False)
-
             # Create an E3Connector instance based on the configuration
             self.e3_connector = E3Connector.setup_connector(kwargs.get('link', ''), kwargs.get('transport', '')) 
             
@@ -38,7 +29,7 @@ class E3Interface:
             e3_logger.info(f"Endpoint inbound {self.e3_connector.inbound_endpoint}")
             e3_logger.info(f"Endpoint outbound {self.e3_connector.outbound_endpoint}")
 
-            self.defs = asn1tools.compile_files(os.path.join(os.path.dirname(os.path.realpath(__file__)), "../../e3protocol/defs/e3.asn"), codec="per") 
+            self.defs = asn1tools.compile_files(os.path.join(os.path.dirname(os.path.realpath(__file__)), "./defs/e3.asn"), codec="per") 
             self.outbound_queue = multiprocessing.Queue()
     
     def send_setup_request(self, dappId: int = 1) -> bool:
@@ -73,10 +64,6 @@ class E3Interface:
         """
         Inbound is for all the messages that are coming from the RAN after the initial setup 
         """
-        if self.profile:
-            yappi.set_clock_type("wall")
-            yappi.start() 
-
         e3_logger.info(f'Start inbound connection')
         self.e3_connector.setup_inbound_connection()
         e3_logger.info(f'Start inbound loop')
@@ -111,35 +98,12 @@ class E3Interface:
             self.stop_event.set()
         finally:
             e3_logger.info("Close inbound connection")
-        
-
-        if self.profile:
-            current_module = sys.modules[__name__]
-            with open(f"{LOG_DIR}/func_stats_inbound.txt", "w") as f:
-                yappi.get_func_stats(
-                    filter_callback=lambda x: yappi.module_matches(
-                        x, [current_module, e3_connector, e3_logging, asn1tools]
-                    )
-                ).strip_dirs().sort("ncall", sort_order="desc").print_all(
-                    f,
-                    columns={
-                        0: ("name", 60),
-                        1: ("ncall", 10),
-                        2: ("tsub", 8),
-                        3: ("ttot", 8),
-                        4: ("tavg", 8),
-                    },
-                )
 
     def _outbound_connection(self):
         """
         Outbound is for all the messages that should go to the RAN after the initial setup 
         Messages are dApp Control Action and dApp Report Message
         """
-        if self.profile:
-            yappi.set_clock_type("wall")
-            yappi.start() 
-
         e3_logger.info(f'Start outbound connection')
         self.e3_connector.setup_outbound_connection()
 
@@ -170,24 +134,6 @@ class E3Interface:
             self.stop_event.set()
         finally:
             e3_logger.info("Close outbound connection")
-        
-        if self.profile:
-            current_module = sys.modules[__name__]
-            with open(f"{LOG_DIR}/func_stats_outbound.txt", "w") as f:
-                yappi.get_func_stats(
-                    filter_callback=lambda x: yappi.module_matches(
-                        x, [current_module, e3_connector, e3_logging, asn1tools]
-                    )
-                ).strip_dirs().sort("ncall", sort_order="desc").print_all(
-                    f,
-                    columns={
-                        0: ("name", 60),
-                        1: ("ncall", 10),
-                        2: ("tsub", 8),
-                        3: ("ttot", 8),
-                        4: ("tavg", 8),
-                    },
-                )
 
     def _handle_incoming_data(self, data):
         for callback in self.callbacks:
@@ -239,18 +185,3 @@ class E3Interface:
     def __del__(self):
         if not self.stop_event.is_set():
            self.terminate_connections()
-
-if __name__ == "__main__":
-    # Usage Example
-    def sample_callback(data):
-        print(f"Callback called with data: {data.decode()}")
-
-    # Initialize the singleton instance with profiling enabled
-    e3_interface = E3Interface(profile=True)
-    e3_interface.add_callback(sample_callback)
-
-    # Remove a callback
-    e3_interface.remove_callback(sample_callback)
-
-    # Stop the server (for cleanup or at program exit)
-    e3_interface.terminate_connections()

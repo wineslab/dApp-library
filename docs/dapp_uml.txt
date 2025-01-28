@@ -18,7 +18,7 @@ class E3Interface {
     - e3_connector : E3Connector
     -- Methods --
     __new__()
-    __init__(link: str, transport: str, profile: bool)
+    __init__(link: str, transport: str)
     + add_callback(callback)
     + remove_callback(callback)
     + terminate_connections()

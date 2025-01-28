@@ -2,9 +2,6 @@ import numpy as np
 import matplotlib
 matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
-import os
-
-print(os.environ.get('DISPLAY'))
 
 class EnergyPlotter:
     def __init__(self, fft_size=1536, bw=40e6, center_freq=3.619e9) :

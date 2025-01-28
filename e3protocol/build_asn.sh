@@ -3,7 +3,7 @@ set -e
 # set -x
 
 # Set up paths
-ASN1_FILE="defs/e3.asn"
+ASN1_FILE="../src/e3interface/defs/e3.asn"
 ASN1C_OUTPUT_DIR="asn1c_output"
 ASN1C_COMPILED_DIR="asn1c_compiled_output"
 
@@ -22,6 +22,6 @@ gcc -c -fPIC $ABS_PATH/$ASN1C_OUTPUT_DIR/*.c -I $ABS_PATH/$ASN1C_OUTPUT_DIR
 cd -
 
 echo "Compiling C client..." 
-gcc -o client/client client/client.c defs/e3.c $ASN1C_COMPILED_DIR/*.o -I$ASN1C_OUTPUT_DIR -Idefs/ -lsctp -ggdb
+gcc -o client/client client/client.c wrapper/e3.c $ASN1C_COMPILED_DIR/*.o -I$ASN1C_OUTPUT_DIR -Idefs/ -lsctp -ggdb
 
 echo "Build completed."

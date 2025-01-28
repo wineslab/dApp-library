@@ -1,0 +1,48 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dApps"
+dynamic = ["version"]
+description = 'A library for creating and connecting dApps to Open RAN units.'
+readme = "README.md"
+requires-python = ">=3.8"
+keywords = ["dApps", "o-ran", "5g"]
+authors = [
+  { name = "Andrea Lacava", email = "thecave003@gmail.com" },
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3.8",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: Implementation :: CPython",
+  "Programming Language :: Python :: Implementation :: PyPy",
+]
+
+dependencies = [
+  "asn1tools",
+  "typing_extensions",
+  "numpy",
+  "pyzmq"
+]
+
+[project.urls]
+Homepage = "https://openrangym.com/ran-frameworks/dapps"
+Source = "https://github.com/wineslab/dApp-library"
+"Bug Tracker" = "https://github.com/wineslab/dApp-library/issues"
+
+[tool.hatch.version]
+path = "VERSION"
+pattern = "(?P<version>\\d+\\.\\d+\\.\\d+)"
+
+[tool.hatch.build.targets.wheel]
+packages = ['src/dapp', 'src/e3interface', 'src/spectrum','src/visualization']
+sources = ["src"]
+
+[project.optional-dependencies]
+option1 = ['influxdb_client']

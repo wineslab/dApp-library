@@ -3,12 +3,10 @@ from abc import ABC, abstractmethod
 from enum import Enum
 import os
 import socket
-import time
 import zmq
 import sctp
-from e3_logging import e3_logger
+from .e3_logging import e3_logger, LOG_DIR
 
-LOG_DIR = ('.' if os.geteuid() != 0 else '') + '/logs/'
 
 class E3LinkLayer(Enum):
     ZMQ = "zmq"

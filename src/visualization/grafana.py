@@ -1,6 +1,10 @@
 import configparser
-import influxdb_client
-from influxdb_client import InfluxDBClient, Point
+try:
+    from influxdb_client import InfluxDBClient, Point
+except ImportError as e:
+    print(e.msg)
+    print("Please install influxdb_client to use this class")
+    exit(-1)
 import atexit
 import logging
 
