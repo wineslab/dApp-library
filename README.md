@@ -6,7 +6,7 @@ A Python Library for dApps
 
 Clone the repository
 
-````
+```
 hatch build
 pip3 install dist/*.tar.gz
 ```
@@ -31,6 +31,6 @@ There are many possible arguments:
 If you use the dApp concept and/or the framework to develop your own dApps, please cite the following paper:
 
 ```text
-@ARTICLE{TDB
+@ARTICLE{TBA,
  }
 ```
