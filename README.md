@@ -1,6 +1,6 @@
-# dApp library
+# dApp Library
 
-A Python Library for dApps
+A complete tutorial on how to deploy a dApp can be found on the [OpenRAN Gym website](https://openrangym.com/tutorials/dapps-oai). Please refer to that guide to instrument your system.
 
 ## Installation
 
@@ -19,7 +19,9 @@ OAI should start _before_ running the dApp
 python3 examples/spectrum_dapp.py
 ```
 
-There are many possible arguments:
+This dApp implements a spectrum sharing use case discussed in [our paper](https://arxiv.org/pdf/2501.16502).
+
+The dApp can be controlled through the following command-line arguments:
 - `ota` bool (false): If true, use the OAI and spectrum configurations for OTA else use the ones of Colosseum
 - `control` bool (false): If set to true, performs the PRB masking
 - `energy-gui` bool (false): If set to true, creates and show the energy spectrum
