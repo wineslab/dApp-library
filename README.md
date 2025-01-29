@@ -1,6 +1,6 @@
-# spear-dApp
+# dApp Library
 
-password of the colosseum container of dApp is `spear`
+A complete tutorial on how to deploy a dApp can be found on the [OpenRAN Gym website](https://openrangym.com/tutorials/dapps-oai). Please refer to that guide to instrument your system.
 
 ## Usage
 
@@ -11,7 +11,7 @@ password of the colosseum container of dApp is `spear`
 
 ### System configuration for OTA
 
-This part of the guide is inteded to be only if running with `--ota` thus with UDS sockets
+This part of the guide is inteded to be only if running with `--ota` thus with Unix Domain Sockets (UDSs).
 If we need the dApp to run in a different user than OAI (e.g., $USER vs root) we need to create a specific unix users group called `dapp` and we assign root and user to this group to enable shared UDS through a dedicated foldert:
 ```
 sudo groupadd dapp
@@ -49,7 +49,9 @@ OAI should start _before_ running the dApp
 python3 src/dapp/dapp.py
 ```
 
-There are many possible arguments:
+This dApp implements a spectrum sharing use case discussed in [our paper](https://arxiv.org/pdf/2501.16502).
+
+The dApp can be controlled through the following command-line arguments:
 - `ota` bool (false): If true, use the OAI and spectrum configurations for OTA else use the ones of Colosseum
 - `control` bool (false): If set to true, performs the PRB masking
 - `energy-gui` bool (false): If set to true, creates and show the energy spectrum
