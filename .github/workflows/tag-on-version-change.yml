@@ -1,0 +1,39 @@
+name: Auto-Tag on VERSION Change
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'VERSION'  # Only trigger if VERSION file changes
+
+jobs:
+  tag_version:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # Ensure we fetch all tags
+
+    - name: Read VERSION file
+      id: get_version
+      run: echo "VERSION=$(cat VERSION | tr -d '[:space:]')" >> $GITHUB_ENV
+
+    - name: Check if tag exists
+      id: check_tag
+      run: |
+        if git rev-parse "refs/tags/$VERSION" >/dev/null 2>&1; then
+          echo "Tag $VERSION already exists. Skipping..."
+          echo "EXISTS=true" >> $GITHUB_ENV
+        else
+          echo "EXISTS=false" >> $GITHUB_ENV
+        fi
+
+    - name: Create and push new tag
+      if: env.EXISTS == 'false'
+      run: |
+        git tag $VERSION
+        git push origin $VERSION
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
