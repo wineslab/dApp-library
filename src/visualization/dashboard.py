@@ -1,6 +1,16 @@
 import threading
-from flask import Flask, render_template
-from flask_socketio import SocketIO
+try:
+    from flask import Flask, render_template
+    from flask_socketio import SocketIO
+except ModuleNotFoundError:
+                    print(
+                        "Optional dependencies for GUI not installed.\n"
+                        "Fix this by running:\n\n"
+                        "    pip install 'dApps[gui]'  # OR\n"
+                        "    pip install 'dApps[all]'\n",
+                        exc_info=True
+                    )
+                    exit(-1)
 import numpy as np
 
 class DemoGui:

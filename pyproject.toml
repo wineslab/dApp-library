@@ -45,4 +45,13 @@ packages = ['src/dapp', 'src/e3interface', 'src/spectrum','src/visualization']
 sources = ["src"]
 
 [project.optional-dependencies]
-option1 = ['influxdb_client']
+network = ["pysctp"]
+gui = ["flask", "flask-socketio", "matplotlib"]
+api = ["influxdb_client"]
+all = [
+  "pysctp",
+  "flask",
+  "flask-socketio",
+  "matplotlib", 
+  "influxdb_client"
+]

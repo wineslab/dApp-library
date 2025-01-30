@@ -1,10 +1,16 @@
-import configparser
 try:
+    import configparser   
     from influxdb_client import InfluxDBClient, Point
-except ImportError as e:
-    print(e.msg)
-    print("Please install influxdb_client to use this class")
-    exit(-1)
+except [ImportError, ModuleNotFoundError] as e:
+                    print(e.msg)
+                    print(
+                        "Optional dependencies for API not installed.\n"
+                        "Fix this by running:\n\n"
+                        "    pip install 'dApps[api]'  # OR\n"
+                        "    pip install 'dApps[all]'\n",
+                        exc_info=True
+                    )
+                    exit(-1)
 import atexit
 import logging
 

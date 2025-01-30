@@ -1,7 +1,17 @@
-import numpy as np
-import matplotlib
+try:
+    import matplotlib
+except ModuleNotFoundError:
+                    print(
+                        "Optional dependencies for GUI not installed.\n"
+                        "Fix this by running:\n\n"
+                        "    pip install 'dApps[gui]'  # OR\n"
+                        "    pip install 'dApps[all]'\n",
+                        exc_info=True
+                    )
+                    exit(-1)
 matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
+import numpy as np
 import os
 
 print(os.environ.get('DISPLAY'))
