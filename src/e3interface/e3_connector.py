@@ -4,7 +4,6 @@ from enum import Enum
 import os
 import socket
 import zmq
-import sctp
 from .e3_logging import e3_logger, LOG_DIR
 
 
@@ -208,6 +207,17 @@ class POSIXConnector(E3Connector):
     def _create_socket(self):
         match self.transport_layer:
             case E3TransportLayer.SCTP:
+                try:
+                    import sctp
+                except ModuleNotFoundError:
+                    e3_logger.critical(
+                        "SCTP selected as transport layer, but the optional dependency 'pysctp' is not installed.\n"
+                        "Fix this by running:\n\n"
+                        "    pip install 'dApps[network]'  # OR\n"
+                        "    pip install 'dApps[all]'\n",
+                        exc_info=True
+                    )
+                    exit(-1)
                 sock = sctp.sctpsocket_tcp(socket.AF_INET)
             case E3TransportLayer.TCP:
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

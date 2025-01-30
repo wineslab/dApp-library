@@ -45,8 +45,8 @@ def main(args, time_to_wait: float = 60.0):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="dApp example")
     parser.add_argument('--ota', action='store_true', default=False, help="Specify if this is OTA or on Colosseum")
-    parser.add_argument('--link', type=str, default='posix', choices=[layer.value for layer in E3LinkLayer], help="Specify the link layer to be used")
-    parser.add_argument('--transport', type=str,  default='uds', choices=[layer.value for layer in E3TransportLayer], help="Specify the transport layer to be used")
+    parser.add_argument('--link', type=str, default='zmq', choices=[layer.value for layer in E3LinkLayer], help="Specify the link layer to be used")
+    parser.add_argument('--transport', type=str,  default='ipc', choices=[layer.value for layer in E3TransportLayer], help="Specify the transport layer to be used")
     parser.add_argument('--save-iqs', action='store_true', default=False, help="Specify if this is data collection run or not. In the first case I/Q samples will be saved")
     parser.add_argument('--control', action='store_true', default=False, help="Set whether to perform control of PRB")
     parser.add_argument('--energy-gui', action='store_true', default=False, help="Set whether to enable the energy GUI")

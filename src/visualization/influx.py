@@ -1,5 +1,16 @@
-import configparser
-from influxdb_client import InfluxDBClient, Point
+try:
+    import configparser   
+    from influxdb_client import InfluxDBClient, Point
+except [ImportError, ModuleNotFoundError] as e:
+                    print(e.msg)
+                    print(
+                        "Optional dependencies for API not installed.\n"
+                        "Fix this by running:\n\n"
+                        "    pip install 'dApps[api]'  # OR\n"
+                        "    pip install 'dApps[all]'\n",
+                        exc_info=True
+                    )
+                    exit(-1)
 import time
 import atexit
 import numpy as np

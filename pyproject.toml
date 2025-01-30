@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "dApps"
+name = "dapps"
 dynamic = ["version"]
 description = 'A library for creating and connecting dApps to Open RAN units.'
 readme = "README.md"
@@ -33,6 +33,7 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://openrangym.com/ran-frameworks/dapps"
+Package = "https://pypi.org/project/dapps/"
 Source = "https://github.com/wineslab/dApp-library"
 "Bug Tracker" = "https://github.com/wineslab/dApp-library/issues"
 
@@ -45,4 +46,13 @@ packages = ['src/dapp', 'src/e3interface', 'src/spectrum','src/visualization']
 sources = ["src"]
 
 [project.optional-dependencies]
-option1 = ['influxdb_client']
+network = ["pysctp"]
+gui = ["flask", "flask-socketio", "matplotlib"]
+api = ["influxdb_client"]
+all = [
+  "pysctp",
+  "flask",
+  "flask-socketio",
+  "matplotlib", 
+  "influxdb_client"
+]
