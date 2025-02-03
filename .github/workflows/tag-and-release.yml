@@ -1,11 +1,9 @@
-name: Tag on VERSION change and Publish dApp package
+name: Tag and Publish dApp package
 
 on:
   push:
     branches:
       - main
-    paths:
-      - 'VERSION'  # Only trigger if VERSION file changes
 
 jobs:
   create-tag:
