@@ -23,10 +23,18 @@ def stop_program(time_to_wait, dapp: SpectrumSharingDApp):
 def main(args, time_to_wait: float = 60.0):
     # with open(f"{LOG_DIR}/busy.txt", "w") as f:
     #     f.close()
-    
-    dapp = SpectrumSharingDApp(ota=args.ota, save_iqs=args.save_iqs, control=args.control, link=args.link, transport=args.transport,
-                energyGui=args.energy_gui, iqPlotterGui=args.iq_plotter_gui, demoGui=args.demo_gui)
 
+    if args.ota:
+        print(f'Using OTA configuration')
+        noise_floor_threshold = 20 # this really depends on the RF conditions and should be carefully calibrated
+    else: # Colosseum
+        print(f'Using Colosseum configuration')
+        noise_floor_threshold = 53
+
+    print(f'Threshold {noise_floor_threshold}')
+    
+    dapp = SpectrumSharingDApp(noise_floor_threshold=noise_floor_threshold, save_iqs=args.save_iqs, control=args.control, link=args.link, transport=args.transport,
+                energyGui=args.energy_gui, iqPlotterGui=args.iq_plotter_gui, dashboard=args.demo_gui)
     dapp.setup_connection()
     
     if args.timed:

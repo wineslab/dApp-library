@@ -11,6 +11,7 @@
 <body>
     <div id="prbs"></div>
     <div id="magnitude"></div>
+    <div id="predicted_label"></div>
 
     <script>
         var waterfall = [{
@@ -22,7 +23,7 @@
         var waterfallLayout = {
             title: "Magnitude of the Sensed Spectrum",
             xaxis: {
-                title: "OFDM Symbols"
+                title: "Subcarriers of the OFDM Symbol"
             },
             yaxis: {
                 title: "Time samples",
@@ -152,8 +153,18 @@
             }
         };
 
+        var classifierLayout = {
+            title: {
+                text: "Predicted Label: N/A",
+                font: { size: 24 }
+            },
+            xaxis: { visible: false },
+            yaxis: { visible: false }
+        };      
+
         var waterfall_buffer;
         var prbs_buffer;
+        var predictedLabel;
 
         var socket = io.connect('http://' + document.domain + ':' + location.port);
         socket.on('initialize_plot', function (data) {
@@ -163,6 +174,9 @@
             prbs[0].z = prbs_buffer;
             Plotly.newPlot('magnitude', waterfall, waterfallLayout);
             Plotly.newPlot('prbs', prbs, prbsLayout);
+            if(data.predicted_label){
+                Plotly.newPlot("predicted_label", [], classifierLayout);
+            }
         });
 
         socket.on('update_plot', function (data) {
@@ -184,6 +198,11 @@
                 prbs_buffer[0].fill(0);
                 data.prb_list.forEach(index => prbs_buffer[0][index] = 1);
                 Plotly.restyle('prbs', { z: [prbs_buffer] });
+            } else if ('predicted_label' in data) {
+                console.log("Predicted label is: ", data.predicted_label);
+                Plotly.relayout('predicted_label', {
+                    'title.text': `Predicted Label: ${data.predicted_label}`
+                });
             } else {
                 console.error('Error unknown values in data ', data);
             }

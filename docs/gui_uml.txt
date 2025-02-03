@@ -34,7 +34,7 @@ class IQPlotter {
     + process_iq_data(iq_data)
 }
 
-class DemoGui {
+class Dashboard {
     -- Attributes --
     - BUFFER_SIZE : int
     - iq_size : int
@@ -49,6 +49,4 @@ class DemoGui {
     + stop()
 }
 
-DemoGui --> IQPlotter : "contains"
-DemoGui --> EnergyPlotter : "contains"
 @enduml
