@@ -54,7 +54,7 @@ class SpectrumSharingDApp(DApp):
 
         self.energyGui = kwargs.get('energyGui', False)
         self.iqPlotterGui = kwargs.get('iqPlotterGui', False)
-        self.demoGui = kwargs.get('demoGui', False)
+        self.dashboard = kwargs.get('dashboard', False)
 
         self.control_count = 1
         self.abs_iq_av = np.zeros(self.FFT_SIZE)
@@ -70,11 +70,12 @@ class SpectrumSharingDApp(DApp):
             iq_size = self.FFT_SIZE * 2 # double the size of ofdm_symbol_size since real and imaginary parts are interleaved
             self.iqPlotter = IQPlotter(buffer_size=500, iq_size=iq_size, bw=self.bw, center_freq=self.center_freq)    
 
-        if self.demoGui:
-            from visualization.dashboard import DemoGui
+        if self.dashboard:
+            from visualization.dashboard import Dashboard
             self.demo_queue = multiprocessing.Queue()
             iq_size = self.FFT_SIZE * 2 # double the size of ofdm_symbol_size since real and imaginary parts are interleaved
-            self.demo = DemoGui(buffer_size=100, iq_size=iq_size) 
+            classifier = kwargs.get('classifier', None)
+            self.demo = Dashboard(buffer_size=100, iq_size=iq_size, classifier=classifier) 
 
     def get_iqs_from_ran(self, data):
         dapp_logger.debug(f'Triggered callback')
@@ -93,7 +94,7 @@ class SpectrumSharingDApp(DApp):
         if self.iqPlotterGui:
             self.iq_queue.put(iq_arr)
 
-        if self.demoGui:
+        if self.dashboard:
             self.demo_queue.put(("iq_data", iq_arr))
 
         if self.control:
@@ -106,9 +107,6 @@ class SpectrumSharingDApp(DApp):
             self.control_count += 1
             dapp_logger.debug(f"Control count is: {self.control_count}")
 
-            if self.iqPlotterGui:
-                self.iq_queue.put(iq_arr)
-
             if self.control_count == self.Average_over_frames:
                 abs_iq_av_db =  20 * np.log10(1 + (self.abs_iq_av/(self.Average_over_frames)))
                 abs_iq_av_db_offset_correct = np.append(abs_iq_av_db[self.First_carrier_offset:self.FFT_SIZE],abs_iq_av_db[0:self.First_carrier_offset])
@@ -118,7 +116,6 @@ class SpectrumSharingDApp(DApp):
                 dapp_logger.info(f'abs_iq_av_db_offset_correct: {abs_iq_av_db_offset_correct.max()}')
                 # last_5_max_abs_iq_av_db_offset_correct = np.sort(abs_iq_av_db_offset_correct)[-20:]
                 # dapp_logger.info(f'Last 20 max values (abs_iq_av_db_offset_correct): {last_5_max_abs_iq_av_db_offset_correct}')
-
 
                 # PRB blocking based on the noise floor threshold
                 f_ind = np.arange(self.FFT_SIZE)
@@ -143,7 +140,7 @@ class SpectrumSharingDApp(DApp):
                 if self.energyGui:
                     self.sig_queue.put(abs_iq_av_db)
                 
-                if self.demoGui:
+                if self.dashboard:
                     self.demo_queue.put(("prb_list", prb_blk_list))
 
                 # Reset the variables
@@ -154,10 +151,12 @@ class SpectrumSharingDApp(DApp):
         if self.energyGui:
             abs_iq_av_db = self.sig_queue.get()
             self.energyPlotter.process_iq_data(abs_iq_av_db)
+
         if self.iqPlotterGui:
             iq_data = self.iq_queue.get()
             self.iqPlotter.process_iq_data(iq_data)
-        if self.demoGui:
+
+        if self.dashboard:
             message = self.demo_queue.get()
             self.demo.process_iq_data(message)
 
@@ -165,5 +164,5 @@ class SpectrumSharingDApp(DApp):
         if self.save_iqs:
             self.iq_save_file.close()
         
-        if self.demoGui:
+        if self.dashboard:
             self.demo.stop()

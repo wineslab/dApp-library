@@ -25,7 +25,7 @@ def main(args, time_to_wait: float = 60.0):
     #     f.close()
     
     dapp = SpectrumSharingDApp(ota=args.ota, save_iqs=args.save_iqs, control=args.control, link=args.link, transport=args.transport,
-                energyGui=args.energy_gui, iqPlotterGui=args.iq_plotter_gui, demoGui=args.demo_gui)
+                energyGui=args.energy_gui, iqPlotterGui=args.iq_plotter_gui, dashboard=args.demo_gui)
 
     dapp.setup_connection()
     

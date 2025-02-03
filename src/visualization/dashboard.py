@@ -13,8 +13,8 @@ except ModuleNotFoundError:
                     exit(-1)
 import numpy as np
 
-class DemoGui:
-    def __init__(self, buffer_size=100, iq_size=1536, bw=46.08e6, center_freq=3.6192e9):
+class Dashboard:
+    def __init__(self, buffer_size=100, iq_size=1536, bw=46.08e6, center_freq=3.6192e9, classifier=None):
         # TODO double check killing conditions
         # Flask app setup
         self.app = Flask(__name__)
@@ -29,6 +29,8 @@ class DemoGui:
         
         # Route setup
         self.app.add_url_rule("/", view_func=self.index)
+
+        self.classifier = classifier if classifier is not None else None
 
         # SocketIO event handlers
         self.socketio.on_event("connect", self.handle_initial_connection)
@@ -63,6 +65,7 @@ class DemoGui:
         data_buffer = {
             "magnitude": np.zeros((self.BUFFER_SIZE, iqs_to_show)).tolist(),
             "num_prbs": num_prbs,
+            "predicted_label": self.classifier is not None
         }
         self.socketio.emit("initialize_plot", data_buffer)
 
@@ -88,6 +91,11 @@ class DemoGui:
             if self.sampling_counter >= self.sampling_threshold:
                 magnitude_dB = self._process_iq_data(iq_data)[::-1].tolist() # visualization processing is delegated to client
                 self.socketio.emit("update_plot", {"magnitude": magnitude_dB})
+
+                if self.classifier:
+                    label = self.classifier.predict(iq_data)
+                    self.socketio.emit("update_plot", {"predicted_label": label})
+
                 self.sampling_counter = 0
 
         elif plot == "prb_list":
@@ -101,4 +109,4 @@ class DemoGui:
             self.run_thread.join()
 
 if __name__ == "__main__":
-    server_app = DemoGui()
+    server_app = Dashboard()
