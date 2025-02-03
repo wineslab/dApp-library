@@ -25,7 +25,7 @@ class SpectrumSharingDApp(DApp):
     # Noise floor threshold needs to be calibrated
     # We receive the symbols and average them over some frames, and do thresholding.
 
-    def __init__(self, id: int = 1, ota: bool = False, save_iqs: bool = False, control: bool = False, link: str = 'posix', transport:str = 'uds', **kwargs):
+    def __init__(self, id: int = 1, noise_floor_threshold: int = 53, save_iqs: bool = False, control: bool = False, link: str = 'posix', transport:str = 'uds', **kwargs):
         super().__init__(link=link, transport=transport, **kwargs) 
 
         self.bw = 40.08e6  # Bandwidth in Hz
@@ -35,14 +35,7 @@ class SpectrumSharingDApp(DApp):
         self.prb_thrs = 75 # This avoids blacklisting PRBs where the BWP is scheduled (it’s a workaround bc the UE and gNB would not be able to communicate anymore, a cleaner fix is to move the BWP if needed or things like that)
         self.FFT_SIZE = 1536  
         self.Average_over_frames = 63
-        
-        if ota:
-            dapp_logger.info(f'Using OTA configuration')
-            self.Noise_floor_threshold = 20 # this really depends on the RF conditions and should be carefully calibrated
-        else: # Colosseum
-            dapp_logger.info(f'Using Colosseum configuration')
-            self.Noise_floor_threshold = 53
-
+        self.noise_floor_threshold = noise_floor_threshold
         self.save_iqs = save_iqs
         self.e3_interface.add_callback(self.get_iqs_from_ran)
         if self.save_iqs:
@@ -119,7 +112,7 @@ class SpectrumSharingDApp(DApp):
 
                 # PRB blocking based on the noise floor threshold
                 f_ind = np.arange(self.FFT_SIZE)
-                blklist_sub_carrier = f_ind[abs_iq_av_db_offset_correct > self.Noise_floor_threshold]
+                blklist_sub_carrier = f_ind[abs_iq_av_db_offset_correct > self.noise_floor_threshold]
                 np.sort(blklist_sub_carrier)
                 dapp_logger.info(f'blklist_sub_carrier: {blklist_sub_carrier}')
                 prb_blk_list = np.unique((np.floor(blklist_sub_carrier/self.Num_car_prb))).astype(np.uint16)
