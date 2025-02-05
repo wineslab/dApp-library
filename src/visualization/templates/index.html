@@ -17,13 +17,20 @@
         var waterfall = [{
             z: [],
             type: 'heatmap',
-            colorscale: "Viridis"
+            colorscale: "Viridis",
+            colorbar: {
+                title:{ 
+                    text: "Magnitude [dB]",
+                    side: 'right'
+                },
+                orientation: 'h'
+            }
         }];
 
         var waterfallLayout = {
-            title: "Magnitude of the Sensed Spectrum",
+            title: "Sensed Spectrum",
             xaxis: {
-                title: "Subcarriers of the OFDM Symbol"
+                title: "OFDM Symbol Subcarriers"
             },
             yaxis: {
                 title: "Time samples",
@@ -155,7 +162,7 @@
 
         var classifierLayout = {
             title: {
-                text: "Predicted Label: N/A",
+                text: "RFI Predicted: N/A",
                 font: { size: 24 }
             },
             xaxis: { visible: false },
@@ -199,9 +206,9 @@
                 data.prb_list.forEach(index => prbs_buffer[0][index] = 1);
                 Plotly.restyle('prbs', { z: [prbs_buffer] });
             } else if ('predicted_label' in data) {
-                console.log("Predicted label is: ", data.predicted_label);
+                console.log("RFI Predicted is ", data.predicted_label);
                 Plotly.relayout('predicted_label', {
-                    'title.text': `Predicted Label: ${data.predicted_label}`
+                    'title.text': `RFI Predicted: ${data.predicted_label}`
                 });
             } else {
                 console.error('Error unknown values in data ', data);
