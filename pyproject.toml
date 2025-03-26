@@ -32,7 +32,7 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://openrangym.com/ran-frameworks/dapps"
+Homepage = "https://openrangym.com/o-ran-frameworks/dapps"
 Package = "https://pypi.org/project/dapps/"
 Source = "https://github.com/wineslab/dApp-library"
 "Bug Tracker" = "https://github.com/wineslab/dApp-library/issues"
