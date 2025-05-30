@@ -32,9 +32,20 @@ def main(args, time_to_wait: float = 60.0):
         noise_floor_threshold = 53
 
     print(f'Threshold {noise_floor_threshold}')
-    
+
+    classifier = None
+    if args.model:
+        classifier = Classifier(
+            time_window = args.time_window,
+            input_vector = args.input_vector,
+            moving_avg_window = args.moving_avg_window,
+            extraction_window = args.extraction_window,
+            model_path = args.model
+        )
+
     dapp = SpectrumSharingDApp(noise_floor_threshold=noise_floor_threshold, save_iqs=args.save_iqs, control=args.control, link=args.link, transport=args.transport,
-                energyGui=args.energy_gui, iqPlotterGui=args.iq_plotter_gui, dashboard=args.demo_gui)
+                energyGui=args.energy_gui, iqPlotterGui=args.iq_plotter_gui, dashboard=args.demo_gui, classifier=classifier)
+
     dapp.setup_connection()
     
     if args.timed:
@@ -54,15 +65,51 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="dApp example")
     parser.add_argument('--ota', action='store_true', default=False, help="Specify if this is OTA or on Colosseum")
     parser.add_argument('--link', type=str, default='zmq', choices=[layer.value for layer in E3LinkLayer], help="Specify the link layer to be used")
-    parser.add_argument('--transport', type=str,  default='ipc', choices=[layer.value for layer in E3TransportLayer], help="Specify the transport layer to be used")
+    parser.add_argument('--transport', type=str, default='ipc', choices=[layer.value for layer in E3TransportLayer], help="Specify the transport layer to be used")
     parser.add_argument('--save-iqs', action='store_true', default=False, help="Specify if this is data collection run or not. In the first case I/Q samples will be saved")
     parser.add_argument('--control', action='store_true', default=False, help="Set whether to perform control of PRB")
     parser.add_argument('--energy-gui', action='store_true', default=False, help="Set whether to enable the energy GUI")
     parser.add_argument('--iq-plotter-gui', action='store_true', default=False, help="Set whether to enable the IQ Plotter GUI")
     parser.add_argument('--demo-gui', action='store_true', default=False, help="Set whether to enable the Demo GUI")
     parser.add_argument('--timed', action='store_true', default=False, help="Run with a 5-minute time limit")
+    parser.add_argument('--model', type=str, default='', help="Path to the CNN model file to be used")
+
+    parser.add_argument('--time-window', type=int, help="Number of input vectors to pass to the CNN model.")
+    parser.add_argument('--input-vector', type=int, help="Number of I/Q samples per input vector.")
+    parser.add_argument('--moving-avg-window', type=int, help="Window size (in samples) for the moving average used to detect energy peaks in the spectrum.")
+    parser.add_argument('--extraction-window', type=int, help="Number of samples to retain after detecting an energy peak.")
 
     args = parser.parse_args()
+    if args.model:
+        try:
+            from libiq.classifier.cnn import Classifier
+        except ModuleNotFoundError:
+            print(
+                "Optional dependencies to run this example are not installed.\n"
+                "Fix this by running:\n\n"
+                "    pip install libiq  # OR\n"
+                "    pip install dapps[cnn]  # OR\n"
+                "    pip install dapps[all]\n"
+            )
+            exit(-1)
+
+        if args.time_window is None:
+            args.time_window = 5
+        if args.input_vector is None:
+            args.input_vector = 1536
+        if args.moving_avg_window is None:
+            args.moving_avg_window = 30
+        if args.extraction_window is None:
+            args.extraction_window = 600
+
+    else:
+        if any([
+            args.time_window is not None,
+            args.input_vector is not None,
+            args.moving_avg_window is not None,
+            args.extraction_window is not None
+        ]):
+            parser.error("Arguments --time-window, --input-vector, --moving-avg-window, and --extraction-window must NOT be provided without --model.")
 
     print("Start dApp")
 

@@ -49,10 +49,14 @@ sources = ["src"]
 network = ["pysctp"]
 gui = ["flask", "flask-socketio", "matplotlib"]
 api = ["influxdb_client"]
+cnn = [
+  "libiq"
+]
 all = [
   "pysctp",
   "flask",
   "flask-socketio",
   "matplotlib", 
-  "influxdb_client"
+  "influxdb_client",
+  "libiq"
 ]
