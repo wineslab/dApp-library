@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Usage example for the Spectrum Sharing dApp 
+Example script to showcase the Spectrum Sharing dApp 
 """
 
 import argparse
@@ -23,6 +23,19 @@ def stop_program(time_to_wait, dapp: SpectrumSharingDApp):
 def main(args, time_to_wait: float = 60.0):
     # with open(f"{LOG_DIR}/busy.txt", "w") as f:
     #     f.close()
+
+    if args.model:
+        try:
+            from libiq.classifier.cnn import Classifier
+        except ModuleNotFoundError:
+            print(
+                "Optional dependencies to run this example are not installed.\n"
+                "Fix this by running:\n\n"
+                "    pip install libiq  # OR\n"
+                "    pip install dapps[cnn] (preferred) # OR\n"
+                "    pip install dapps[all]\n"
+            )
+            exit(-1)
 
     if args.ota:
         print(f'Using OTA configuration')
@@ -73,44 +86,12 @@ if __name__ == "__main__":
     parser.add_argument('--demo-gui', action='store_true', default=False, help="Set whether to enable the Demo GUI")
     parser.add_argument('--timed', action='store_true', default=False, help="Run with a 5-minute time limit")
     parser.add_argument('--model', type=str, default='', help="Path to the CNN model file to be used")
-
-    parser.add_argument('--time-window', type=int, help="Number of input vectors to pass to the CNN model.")
-    parser.add_argument('--input-vector', type=int, help="Number of I/Q samples per input vector.")
-    parser.add_argument('--moving-avg-window', type=int, help="Window size (in samples) for the moving average used to detect energy peaks in the spectrum.")
-    parser.add_argument('--extraction-window', type=int, help="Number of samples to retain after detecting an energy peak.")
+    parser.add_argument('--time-window', type=int, default=5, help="Number of input vectors to pass to the CNN model.")
+    parser.add_argument('--input-vector', type=int, default=1536, help="Number of I/Q samples per input vector.")
+    parser.add_argument('--moving-avg-window', type=int, default=30, help="Window size (in samples) for the moving average used to detect energy peaks in the spectrum.")
+    parser.add_argument('--extraction-window', type=int, default=600, help="Number of samples to retain after detecting an energy peak.")
 
     args = parser.parse_args()
-    if args.model:
-        try:
-            from libiq.classifier.cnn import Classifier
-        except ModuleNotFoundError:
-            print(
-                "Optional dependencies to run this example are not installed.\n"
-                "Fix this by running:\n\n"
-                "    pip install libiq  # OR\n"
-                "    pip install dapps[cnn]  # OR\n"
-                "    pip install dapps[all]\n"
-            )
-            exit(-1)
-
-        if args.time_window is None:
-            args.time_window = 5
-        if args.input_vector is None:
-            args.input_vector = 1536
-        if args.moving_avg_window is None:
-            args.moving_avg_window = 30
-        if args.extraction_window is None:
-            args.extraction_window = 600
-
-    else:
-        if any([
-            args.time_window is not None,
-            args.input_vector is not None,
-            args.moving_avg_window is not None,
-            args.extraction_window is not None
-        ]):
-            parser.error("Arguments --time-window, --input-vector, --moving-avg-window, and --extraction-window must NOT be provided without --model.")
-
     print("Start dApp")
 
     main(args)
