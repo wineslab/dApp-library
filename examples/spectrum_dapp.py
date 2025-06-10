@@ -32,8 +32,8 @@ def main(args, time_to_wait: float = 60.0):
                 "Optional dependencies to run this example are not installed.\n"
                 "Fix this by running:\n\n"
                 "    pip install libiq  # OR\n"
-                "    pip install dapps[cnn] (preferred) # OR\n"
-                "    pip install dapps[all]\n"
+                "    pip install dapps[cnn] (minimal) # OR\n"
+                "    pip install dapps[all] (preferred)\n"
             )
             exit(-1)
 
@@ -75,7 +75,7 @@ def main(args, time_to_wait: float = 60.0):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="dApp example")
+    parser = argparse.ArgumentParser(description="Example of a dApp for Spectrum Sharing")
     parser.add_argument('--ota', action='store_true', default=False, help="Specify if this is OTA or on Colosseum")
     parser.add_argument('--link', type=str, default='zmq', choices=[layer.value for layer in E3LinkLayer], help="Specify the link layer to be used")
     parser.add_argument('--transport', type=str, default='ipc', choices=[layer.value for layer in E3TransportLayer], help="Specify the transport layer to be used")

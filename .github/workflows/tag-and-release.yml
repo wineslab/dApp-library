@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.get_version.outputs.version }}
-      tag_created: ${{ steps.get_output.outputs.tag_created }}
+      tag_created: ${{ steps.set_output.outputs.tag_created }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
