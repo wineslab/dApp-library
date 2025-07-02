@@ -4,21 +4,24 @@ A complete tutorial on how to deploy a dApp can be found on the [OpenRAN Gym web
 
 ## Installation
 
-### Python package installation
+### Python package installation (recommended)
 
 ```
 pip3 install dapps[all]
 ```
 
-### Manual installation
-Clone the repository and install it manually
+The dApp can be found in the `examples` directory or it can be downloaded from this repository.
+
+### Manual installation (use only for library development)
+
+Clone the repository and install it manually with:
 
 ```
 hatch build
 pip3 install dist/*.tar.gz
 ```
 
-### Launch the Spectrum Sharing dApp
+### Launch the Spectrum Sharing dApp example
 
 OAI should start _before_ running the dApp
 
@@ -26,23 +29,25 @@ OAI should start _before_ running the dApp
 python3 examples/spectrum_dapp.py
 ```
 
-This dApp implements a spectrum sharing use case discussed in [our paper](https://arxiv.org/pdf/2501.16502).
+This dApp implements a spectrum sharing use case discussed in [our paper](https://doi.org/10.1016/j.comnet.2025.111342) ([here for the archive version](https://arxiv.org/pdf/2501.16502)).
+The dApp parameters can be controlled through the following command-line arguments:
 
-
-The dApp can be controlled through the following command-line arguments:
-
-- `--ota` (store_true, default: False): Specify if this is OTA or on Colosseum  
 - `--link` (str, default: 'zmq', choices: [layer.value for layer in E3LinkLayer]): Specify the link layer to be used  
 - `--transport` (str, default: 'ipc', choices: [layer.value for layer in E3TransportLayer]): Specify the transport layer to be used  
 - `--save-iqs` (store_true, default: False): Specify if this is data collection run or not. In the first case I/Q samples will be saved  
 - `--control` (store_true, default: False): Set whether to perform control of PRB  
+- `--noise-floor-threshold` (int, default: None): Set the noise floor threshold for determining the presence of incumbents and for detecting the PRBs affected.
+- `--ota` (store_true, default: False): Specify if the setup used is OTA or on Colosseum for determining the noise floor threshold. If the `noise_floor_threshold` parameter is specified, this parameter is ignored
 - `--energy-gui` (store_true, default: False): Set whether to enable the energy GUI  
 - `--iq-plotter-gui` (store_true, default: False): Set whether to enable the IQ Plotter GUI  
 - `--demo-gui` (store_true, default: False): Set whether to enable the Demo GUI  
+- `--num-prbs` (int, default: 106): Number of PRBs  
+- `--num-subcarrier-spacing` (int, default: 30): Subcarrier spacing in kHz (FR1 is 30)  
+- `--e` (store_true, default: False): Set if 3/4 sampling for FFT size is set on the gNB (-E option on OAI)  
+- `--center-freq` (float, default: 3.6192e9): Center frequency in Hz  
 - `--timed` (store_true, default: False): Run with a 5-minute time limit  
 - `--model` (str, default: ''): Path to the CNN model file to be used  
 - `--time-window` (int, default: 5): Number of input vectors to pass to the CNN model  
-- `--input-vector` (int, default: 1536): Number of I/Q samples per input vector  
 - `--moving-avg-window` (int, default: 30): Window size (in samples) for the moving average used to detect energy peaks in the spectrum  
 - `--extraction-window` (int, default: 600): Number of samples to retain after detecting an energy peak
 

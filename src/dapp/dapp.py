@@ -19,7 +19,7 @@ LOG_DIR = ('.' if os.geteuid() != 0 else '') + '/logs/'
 class DApp(ABC):
     e3_interface: E3Interface
 
-    def __init__(self, id: int = 1, link: str = 'posix', transport:str = 'uds', callbacks: list = [], **kwargs):
+    def __init__(self, id: int = 1, link: str = 'posix', transport:str = 'ipc', callbacks: list = [], **kwargs):
         super().__init__()
         self.dapp_id = id
         self.e3_interface = E3Interface(link=link, transport=transport)
