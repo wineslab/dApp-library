@@ -17,19 +17,19 @@ import os
 print(os.environ.get('DISPLAY'))
 
 class IQPlotter:
-    def __init__(self, buffer_size=100, iq_size=1536, bw=46.08e6, center_freq=3.6192e9):
+    def __init__(self, buffer_size=100, fft_size=1536, bw=38.16e6, center_freq=3.6192e9):
         """
         Initialize the IQ plotter with buffer size and IQ data dimensions.
         buffer_size: Number of columns (timesteps) to store and plot.
-        iq_size: Size of the IQ data, should be double the size of ofdm_symbol_size with real and imaginary interleaved.
+        fft_size: Size of the FFT.
         bw: Sampling frequency.
         center_freq: Center frequency of the signal.
         """
         self.buffer_size = buffer_size
-        self.iq_size = iq_size
+        self.iq_size = fft_size * 2 # double the size of fft_size since real and imaginary parts are interleaved
         self.bw = bw
         self.center_freq = center_freq
-        self.iq_shape = (iq_size // 2, buffer_size)  # Half the size after splitting real and imaginary parts
+        self.iq_shape = (self.iq_size // 2, buffer_size)  # Half the size after splitting real and imaginary parts
         
         # Initialize the buffer
         self.buffer = np.zeros(self.iq_shape)

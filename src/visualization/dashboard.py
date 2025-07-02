@@ -14,18 +14,21 @@ except ModuleNotFoundError:
 import numpy as np
 
 class Dashboard:
-    def __init__(self, buffer_size=100, iq_size=1536, bw=46.08e6, center_freq=3.6192e9, classifier=None):
-        # TODO double check killing conditions
+    # The default values of the dashboard are based on the default configuration
+    def __init__(self, buffer_size: int = 100, ofdm_symbol_size: int = 1272, bw: float = 38.16e6, center_freq: float = 3.6192e9, 
+                 num_prbs: int = 106, first_carrier_offset: int = 900, classifier = None):
         # Flask app setup
         self.app = Flask(__name__)
         self.app.config['TEMPLATES_AUTO_RELOAD'] = True
         self.socketio = SocketIO(self.app)
 
         # Parameters
-        self.BUFFER_SIZE = buffer_size
-        self.iq_size = iq_size
-        self.BW = bw
-        self.CENTER_FREQ = center_freq
+        self.buffer_size = buffer_size
+        self.ofdm_symbol_size = ofdm_symbol_size
+        self.bw = bw
+        self.center_freq = center_freq
+        self.num_prbs = num_prbs
+        self.first_carrier_offset = first_carrier_offset
         
         # Route setup
         self.app.add_url_rule("/", view_func=self.index)
@@ -51,20 +54,12 @@ class Dashboard:
         self.run_thread.start()
 
     def handle_initial_connection(self):
-        num_prbs = 106
-        iqs_to_show = int(
-            self.iq_size / 2
-        )  # / 2 since the size received is real and imaginary part
-        # Each PRB corresponds to 12 subcarriers
-        # Parameter first_carrier_offset (currently set to 900) is the first subcarrier.
-        # So PRB 0 is [900-911], 1 is [912-923], etc. They wrap around fft_size (now at 1536)
-        # The carrier frequency is in the middle PRB (including DC leak on some radios), this means it falls at (first_carrier_offset + 106*12/2) % fft_size? where % is the modulo operation
-        # The first 76 PRB usually have channels that should not be nulled (but we should investigate more options to enable this)
-        # So if you want the spectrum waterfall to correspond to the PRB masking plot, you can rotate them as per bullet 2 above and drop [635-899]
-        iqs_to_show -= 264  # is the size of the array to drop
         data_buffer = {
-            "magnitude": np.zeros((self.BUFFER_SIZE, iqs_to_show)).tolist(),
-            "num_prbs": num_prbs,
+            "magnitude": np.zeros((self.buffer_size, self.ofdm_symbol_size)).tolist(),
+            "center_freq": self.center_freq,
+            "bw": self.bw,
+            "num_prbs": self.num_prbs,
+            "first_carrier_offset": self.first_carrier_offset,
             "predicted_label": self.classifier is not None
         }
         self.socketio.emit("initialize_plot", data_buffer)
@@ -84,8 +79,6 @@ class Dashboard:
         plot, payload = message
         if plot == "iq_data":
             iq_data = payload
-            if iq_data.size != self.iq_size:
-                raise ValueError(f'Expected IQ data of size {self.iq_size}, but got {iq_data.size}')
 
             self.sampling_counter += 1        
             if self.sampling_counter >= self.sampling_threshold:
@@ -105,7 +98,6 @@ class Dashboard:
     def stop(self):
         """Stops the server and kills the thread."""
         if self.run_thread and self.run_thread.is_alive():
-            self.socketio.stop()
             self.run_thread.join()
 
 if __name__ == "__main__":

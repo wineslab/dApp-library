@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <title>Real-Time Plots</title>
-    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <script src="https://cdn.plot.ly/plotly-3.0.1.min.js" charset="utf-8"></script>
     <script src="//cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
 </head>
 
@@ -18,27 +18,38 @@
             z: [],
             type: 'heatmap',
             colorscale: "Viridis",
+            zmin: 0,
+            zmax: 100,
             colorbar: {
                 title:{ 
                     text: "Magnitude [dB]",
                     side: 'right'
                 },
-                orientation: 'h'
+                orientation: 'v'
             }
         }];
 
         var waterfallLayout = {
-            title: "Sensed Spectrum",
+            title: {
+                text: "Sensed Spectrum",
+                font: { size: 16 }
+            },
             xaxis: {
-                title: "OFDM Symbol Subcarriers"
+                title: {
+                    text: "OFDM Symbol Subcarriers",
+                    font: { size: 14 }
+                }
             },
             yaxis: {
-                title: "Time samples",
+                title: {
+                    text: "Time samples",
+                    font: { size: 14 }
+                },
                 autorange: 'reversed'
             },
             annotations: [
                 {
-                    x: 1272 / 2,
+                    x: 0, // Will be updated dynamically
                     y: 1.15,
                     xref: 'x',
                     yref: 'paper',
@@ -49,21 +60,21 @@
                     }
                 },  
                 {
-                    x: 10,
+                    x: 0, // Will be updated dynamically
                     y: 1.1,
                     xref: 'x',
                     yref: 'paper',
-                    text: '3.5992',
+                    text: `0.0000`,
                     showarrow: false,
                     font: {
                         size: 12
                     }
                 },                {
-                    x: 1272 / 4,
+                    x: 0, // Will be updated dynamically
                     y: 1.1,
                     xref: 'x',
                     yref: 'paper',
-                    text: '3.6092',
+                    text: `0.0000`,
                     showarrow: false,
                     font: {
                         size: 12
@@ -71,33 +82,33 @@
                 },
 
                 {
-                    x: 1272 / 2,
+                    x: 0, // Will be updated dynamically
                     y: 1.1,
                     xref: 'x',
                     yref: 'paper',
-                    text: '3.6192',
+                    text: `0.0000`,
                     showarrow: false,
                     font: {
                         size: 12
                     }
                 },
                 {
-                    x: 1272 * 3 / 4,
+                    x: 0, // Will be updated dynamically
                     y: 1.1,
                     xref: 'x',
                     yref: 'paper',
-                    text: '3.6292',
+                    text: `0.0000`,
                     showarrow: false,
                     font: {
                         size: 12
                     }
                 },
                 {
-                    x: 1272 - 23,
+                    x: 0, // Will be updated dynamically
                     y: 1.1,
                     xref: 'x',
                     yref: 'paper',
-                    text: '3.6392',
+                    text: `0.0000`,
                     showarrow: false,
                     font: {
                         size: 12
@@ -145,12 +156,21 @@
                 align: 'right'
             }
         ],
-            title: "PRB Status Grid",
+            title: {
+                text: "PRB Status Grid",
+                font: { size: 16 }
+            },
             xaxis: {
-                title: "PRB Index"
+                title: {
+                    text: "PRB Index",
+                    font: { size: 14 }
+                }
             },
             yaxis: {
-                title: "Status",
+                title: {
+                    text: "Status",
+                    font: { size: 14 }
+                },
                 showticklabels: false
             },
             height: 200,
@@ -172,11 +192,41 @@
         var waterfall_buffer;
         var prbs_buffer;
         var predictedLabel;
+        var start_ignore;
+        var end_ignore;
+        var initialized = false;
 
         var socket = io.connect('http://' + document.domain + ':' + location.port);
         socket.on('initialize_plot', function (data) {
+            var ofdm_symbol_size = data.magnitude[0].length;
+            var first_carrier_offset = data.first_carrier_offset;
+            var freq_step = data.bw / ofdm_symbol_size;
+            var start_freq = data.center_freq - (ofdm_symbol_size / 2) * freq_step;
+            var freq_labels = [];
+            for (let i = 0; i < 5; i++) {
+                let pos = Math.floor(i * ofdm_symbol_size / 4);
+                let f = (start_freq + pos * freq_step) / 1e9;
+                freq_labels.push(f.toFixed(4));
+            }
+
+            // Update x values for annotations (frequency markers) with proper edge margins
+            var left_margin = Math.max(25, ofdm_symbol_size * 0.02); // At least 25 or 2% of width
+            var right_margin = Math.max(65, ofdm_symbol_size * 0.02); // At least 65 or 2% of width
+            
+            waterfallLayout.annotations[0].x = ofdm_symbol_size / 2 + ofdm_symbol_size / 50; // slightly centered to the right
+            waterfallLayout.annotations[1].x = left_margin;
+            waterfallLayout.annotations[2].x = ofdm_symbol_size / 4;
+            waterfallLayout.annotations[3].x = ofdm_symbol_size / 2;
+            waterfallLayout.annotations[4].x = ofdm_symbol_size * 3 / 4;
+            waterfallLayout.annotations[5].x = ofdm_symbol_size - right_margin;
+            waterfallLayout.annotations[1].text = `${freq_labels[0]}`;
+            waterfallLayout.annotations[2].text = `${freq_labels[1]}`;
+            waterfallLayout.annotations[3].text = `${freq_labels[2]}`;
+            waterfallLayout.annotations[4].text = `${freq_labels[3]}`;
+            waterfallLayout.annotations[5].text = `${freq_labels[4]}`;
+
             waterfall_buffer = data.magnitude;
-            waterfall[0].z.push(waterfall_buffer);
+            waterfall[0].z = waterfall_buffer;
             prbs_buffer = [new Array(data.num_prbs).fill(0)];
             prbs[0].z = prbs_buffer;
             Plotly.newPlot('magnitude', waterfall, waterfallLayout);
@@ -184,29 +234,66 @@
             if(data.predicted_label){
                 Plotly.newPlot("predicted_label", [], classifierLayout);
             }
+
+            // Dynamic preprocessing based on first_carrier_offset    
+            // The carrier frequency is in the middle PRB (including DC leak on some radios)
+            console.log("Initial values:", {
+                ofdm_symbol_size: ofdm_symbol_size,
+                first_carrier_offset: first_carrier_offset,
+                num_prbs: data.num_prbs
+            });
+            const num_consecutive_subcarriers_for_prb = 12; // Always 12 by LTE / NR standard
+            // Calculate the middle PRB position
+            var middle_prb_offset = data.num_prbs * num_consecutive_subcarriers_for_prb / 2;
+            console.log("Calculated middle_prb_offset:", middle_prb_offset);
+            
+            // Calculate slice points dynamically
+            // We want to show the spectrum centered around the middle PRB
+            // The interval to consider is from the middle prb offset to the first carrier offset
+            start_ignore = middle_prb_offset;
+            end_ignore = first_carrier_offset;
+
+            console.log("Slice points:", {
+                start_ignore: start_ignore,
+                end_ignore: end_ignore
+            });
+
+            initialized = true;
         });
 
         socket.on('update_plot', function (data) {
+            if (!initialized) {
+                return;
+            }
+
             if ('magnitude' in data) {
                 // console.log("Magnitude is: ", data.magnitude)
-                // Preprocess data
-                let part1 = data.magnitude.slice(0, 635);
-                // let ignoredPart = data.magnitude.slice(635, 899);
-                let part3 = data.magnitude.slice(899);
+
+                var magnitude_length = data.magnitude.length;                
+                // Dynamic slicing based on calculated positions
+                let part1 = data.magnitude.slice(0, start_ignore);
+                // Ignore the middle section (guards symbols)
+                let part3 = data.magnitude.slice(end_ignore);
                 let magnitudeToShow = part3.concat(part1).reverse();
+                
+                // console.log("Parts lengths:", {
+                //     // part1_length: part1.length,
+                //     // part3_length: part3.length,
+                //     magnitudeToShow_length: magnitudeToShow.length
+                // });
+                
                 // Update waterfall plot
                 waterfall_buffer.pop();
                 waterfall_buffer.unshift(magnitudeToShow);
                 Plotly.restyle('magnitude', { z: [waterfall_buffer] });
-            }
-            else if ('prb_list' in data) {
-                console.log("PRBs are: ", data.prb_list);
+            } else if ('prb_list' in data) {
+                // console.log("PRBs are: ", data.prb_list);
                 // We get a list of indexes to replace each time
                 prbs_buffer[0].fill(0);
                 data.prb_list.forEach(index => prbs_buffer[0][index] = 1);
                 Plotly.restyle('prbs', { z: [prbs_buffer] });
             } else if ('predicted_label' in data) {
-                console.log("RFI Predicted is ", data.predicted_label);
+                // console.log("RFI Predicted is ", data.predicted_label);
                 Plotly.relayout('predicted_label', {
                     'title.text': `RFI Predicted: ${data.predicted_label}`
                 });
