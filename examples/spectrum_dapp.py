@@ -5,13 +5,12 @@ Example script to showcase the Spectrum Sharing dApp
 
 import argparse
 import multiprocessing
-import os
 import time
 
 from e3interface.e3_connector import E3LinkLayer, E3TransportLayer
 from spectrum.spectrum_dapp import SpectrumSharingDApp
 
-LOG_DIR = ('.' if os.geteuid() != 0 else '') + '/logs/'
+LOG_DIR = '/tmp/'
 
 def stop_program(time_to_wait, dapp: SpectrumSharingDApp):
     time.sleep(time_to_wait)
@@ -66,9 +65,15 @@ def main(args, time_to_wait: float = 60.0):
 
     dapp = SpectrumSharingDApp(noise_floor_threshold=noise_floor_threshold, save_iqs=args.save_iqs, control=args.control, link=args.link, transport=args.transport,
                 energyGui=args.energy_gui, iqPlotterGui=args.iq_plotter_gui, dashboard=args.demo_gui, classifier=classifier, center_freq=args.center_freq,
-                num_prbs=args.num_prbs, e_sampling=args.e, num_subcarrier_spacing= args.num_subcarrier_spacing)
+                num_prbs=args.num_prbs, e_sampling=args.e, num_subcarrier_spacing=args.num_subcarrier_spacing)
 
-    dapp.setup_connection()
+    response, ranFunctionList = dapp.setup_connection()   
+    
+    if not response:
+        raise ValueError("RAN refused Setup")
+    
+    # atm we subscribe to all
+    dapp.send_subscription_request(ranFunctionList)
     
     if args.timed:
         timer = multiprocessing.Process(target=stop_program, args=(time_to_wait, dapp))

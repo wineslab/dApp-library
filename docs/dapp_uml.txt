@@ -13,46 +13,97 @@ class E3Interface {
     -- Attributes --
     - _instance : E3Interface
     - _lock : threading.Lock
-    - callbacks : list
+    - callbacks : dict[int, list]
     - stop_event : multiprocessing.Event
+    - initialized : bool
+    - _message_id_counter : int
+    - _message_id_lock : threading.Lock
     - e3_connector : E3Connector
+    - encoder : E3Encoder
+    - outbound_queue : multiprocessing.Queue
+    - inbound_process : multiprocessing.Process
+    - outbound_process : multiprocessing.Process
     -- Methods --
     __new__()
-    __init__(link: str, transport: str)
-    + add_callback(callback)
-    + remove_callback(callback)
+    __init__(encoder: E3Encoder, **kwargs)
+    Note: kwargs can include: link (str), transport (str)
+    + send_setup_request(dappId: int) : bool | list
+    + send_subscription_request(ranFunctionId: int, dappId: int, actionType: str) : bool
+    + send_message_ack(requestId: int, responseCode: str)
+    + setup_connections()
+    + add_callback(dapp_id: int, callback)
+    + remove_callback(dapp_id: int, callback=None)
+    + schedule_control(dappId: int, actionData: bytes)
+    + schedule_report(reportData: bytes)
     + terminate_connections()
-    - _handle_incoming_data(data)
-    - schedule_control(payload: bytes)
-    - schedule_report(payload: bytes)
+    - _inbound_connection()
+    - _outbound_connection()
+    - _handle_incoming_data(dapp_identifier: int, data)
+    - _get_next_message_id() : int
 }
 
 AbstractClass SpectrumSharingDApp {
     -- Attributes --
-    - counter : int
-    - limit_per_file : int
-    - FFT_SIZE : int
-    - Noise_floor_threshold : int
-    - First_carrier_offset : int
-    - Average_over_frames : int
-    - Num_car_prb : int
+    - spectrum_encoder : asn1tools.Compiler
+    - _sampling_threshold_control_callback : callable
+    - num_consecutive_subcarriers_for_prb : int
+    - num_prbs : int
+    - num_subcarrier_spacing : int
+    - ofdm_symbol_size : int
+    - bw : float
+    - center_freq : float
+    - fft_size : int
+    - first_carrier_offset : int
     - prb_thrs : int
+    - average_over_frames : int
+    - noise_floor_threshold : int
+    - save_iqs : bool
+    - sampling_threshold : int
+    - iq_save_file : file
+    - save_counter : int
+    - limit_per_file : int
+    - control : bool
+    - energyGui : bool
+    - iqPlotterGui : bool
+    - dashboard : bool
+    - control_count : int
+    - abs_iq_av : np.ndarray
+    - sig_queue : multiprocessing.Queue (optional, if energyGui=True)
+    - energyPlotter : EnergyPlotter (optional, if energyGui=True)
+    - iq_queue : multiprocessing.Queue (optional, if iqPlotterGui=True)
+    - iqPlotter : IQPlotter (optional, if iqPlotterGui=True)
+    - demo_queue : multiprocessing.Queue (optional, if dashboard=True)
+    - demo : Dashboard (optional, if dashboard=True)
     -- Methods --
-    __init__(ota: bool, save_iqs: bool, control: bool, **kwargs)
-    + get_iqs_from_ran(data)
-    + stop()
+    __init__(id: int, link: str, transport: str, noise_floor_threshold: int, save_iqs: bool, control: bool, center_freq: float, num_prbs: int, num_subcarrier_spacing: int, e_sampling: bool, encoding_method: str, sampling_threshold: int, **kwargs)
+    Note: kwargs can include: energyGui, iqPlotterGui, dashboard, classifier
+    - _init_spectrum_encoder()
+    + set_sampling_threshold_control_logic(callback)
+    + create_prb_blacklist_control(blacklisted_prbs: bytes, prb_count: int, sampling_period_ms: int, action_definition: str) : bytes
+    + decode_iq_data_indication(data: bytes) : dict
+    + decode_config_control(data: bytes) : dict
+    + get_iqs_from_ran(dapp_identifier: int, data: bytes)
+    # _control_loop()
+    # _stop()
+    - _encode_spectrum_message(message_type: str, data: dict) : bytes
+    - _decode_spectrum_message(message_type: str, data: bytes) : dict
 }
 
 
 AbstractClass DApp {
     -- Attributes --
+    - dapp_id : int
+    - encoding_method : str
     - e3_interface : E3Interface
-    - control : bool
+    - stop_event : multiprocessing.Event
     -- Methods --
-    __init__(ota: bool, save_iqs: bool, control: bool, **kwargs)
-    + setup_connection()
+    __init__(id: int, link: str, transport: str, callbacks: list, encoding_method: str, **kwargs)
+    + setup_connection() : bool, list
+    + send_subscription_request(ranFunctionIds: list)
     + control_loop()
     + stop()
+    # _control_loop() : abstract
+    # _stop() : abstract
 }
 
 class E3LinkLayer {
@@ -118,11 +169,42 @@ class POSIXConnector {
     + dispose()
 }
 
+AbstractClass E3Encoder {
+    -- Attributes --
+    - encoding_type : str
+    -- Methods --
+    + encode_pdu(pdu_type: str, pdu_data: dict) : bytes
+    + decode_pdu(data: bytes) : tuple
+    + create_setup_request(dappId: int, ranFunctions: list, msgId: int, actionType: str) : bytes
+    + create_subscription_request(msgId: int, dappId: int, actionType: str, ranFunctionId: int) : bytes
+    + create_message_ack(msgId: int, requestId: int, responseCode: str) : bytes
+    + create_control_action(msgId: int, dappId: int, actionData: bytes) : bytes
+    + create_dapp_report(msgId: int, reportData: bytes) : bytes
+    + create_indication_message(msgId: int, protocolData: bytes) : bytes
+}
+
+class AsnE3Encoder {
+    -- Attributes --
+    - defs : asn1tools.Compiler
+    -- Methods --
+    + __init__(asn_file_path: str)
+    + encode_pdu(pdu_type: str, pdu_data: dict) : bytes
+    + decode_pdu(data: bytes) : tuple
+    + create_setup_request(dappId: int, ranFunctions: list, msgId: int, actionType: str) : bytes
+    + create_subscription_request(msgId: int, dappId: int, actionType: str, ranFunctionId: int) : bytes
+    + create_message_ack(msgId: int, requestId: int, responseCode: str) : bytes
+    + create_control_action(msgId: int, dappId: int, actionData: bytes) : bytes
+    + create_dapp_report(msgId: int, reportData: bytes) : bytes
+    + create_indication_message(msgId: int, protocolData: bytes) : bytes
+}
+
 DApp --> E3Interface
 DApp <|-- SpectrumSharingDApp
 E3Connector <|-- ZMQConnector
 E3Connector <|-- POSIXConnector
+E3Encoder <|-- AsnE3Encoder
 E3Interface --* E3Connector
+E3Interface --* E3Encoder
 E3Connector --> E3LinkLayer 
 E3Connector --> E3TransportLayer
 @enduml

@@ -7,7 +7,9 @@ __author__ = "Andrea Lacava"
 
 import multiprocessing
 import time
+import os
 import numpy as np
+import asn1tools
 # np.set_printoptions(threshold=sys.maxsize)
 
 from dapp.dapp import DApp
@@ -26,8 +28,19 @@ class SpectrumSharingDApp(DApp):
     # We receive the symbols, average them over 63 frames and do PRB thresholding.
 
     def __init__(self, id: int = 1, link: str = 'posix', transport: str = 'ipc', noise_floor_threshold: int = 53, save_iqs: bool = False, control: bool = False,
-                center_freq: float = 3.6192e9, num_prbs: int = 106, num_subcarrier_spacing: int = 30, e_sampling: bool = False, **kwargs):
-        super().__init__(id=id, link=link, transport=transport, **kwargs) 
+                center_freq: float = 3.6192e9, num_prbs: int = 106, num_subcarrier_spacing: int = 30, e_sampling: bool = False, 
+                encoding_method: str = "asn1", sampling_threshold: int = 5, **kwargs):
+        super().__init__(id=id, link=link, transport=transport, encoding_method=encoding_method, **kwargs) 
+
+        # RAN FUNCTION IDS OF INTEREST FOR THIS DAPP is 1 (IQs + PRB Control)
+        # This might change soon and PRB control might become 2
+        self.RAN_FUNCTION_ID = 1
+
+        # Initialize spectrum encoder based on encoding method
+        self._init_spectrum_encoder()
+        
+        # Custom control logic callback
+        self._sampling_threshold_control_callback = None 
 
         # gNB radio configuration used to compute exact values
         self.num_consecutive_subcarriers_for_prb: int = 12 # Always fixed by the LTE/NR standard to 12
@@ -47,7 +60,8 @@ class SpectrumSharingDApp(DApp):
         self.average_over_frames = 63
         self.noise_floor_threshold = noise_floor_threshold
         self.save_iqs = save_iqs
-        self.e3_interface.add_callback(self.get_iqs_from_ran)
+        self.e3_interface.add_callback(self.dapp_id, self.get_iqs_from_ran)
+        self.sampling_threshold = sampling_threshold
         if self.save_iqs:
             self.iq_save_file = open(f"{LOG_DIR}/iqs_{int(time.time())}.bin", "ab")
             self.save_counter = 0
@@ -79,18 +93,162 @@ class SpectrumSharingDApp(DApp):
             self.demo = Dashboard(buffer_size=100, ofdm_symbol_size=self.ofdm_symbol_size, first_carrier_offset=self.first_carrier_offset,
                                 bw=self.bw, center_freq=self.center_freq, num_prbs=num_prbs, classifier=classifier) 
 
-    def get_iqs_from_ran(self, data):
-        dapp_logger.debug(f'Triggered callback')
+    def _init_spectrum_encoder(self):
+        """Initialize the spectrum encoder based on the encoding method"""
+        match self.encoding_method:
+            case "asn1":
+                asn_file_path = os.path.join(os.path.dirname(__file__), "defs", "e3sm_spectrum.asn")
+                self.spectrum_encoder = asn1tools.compile_files(asn_file_path, codec="per")
+            case "json":
+                # Future: Initialize JSON encoder
+                self.spectrum_encoder = None
+                dapp_logger.error("JSON encoding not yet implemented")
+                raise NotImplementedError("JSON encoding not yet implemented")
+            case _:
+                raise ValueError(f"Unsupported encoding method: {self.encoding_method}")
+
+    def set_sampling_threshold_control_logic(self, callback):
+        """Set a custom control logic callback
+        
+        This method should be armed before starting the setup exchange
+        The callback function will be invoked during the control loop and should have the signature:
+            callback(prb_blacklist: np.ndarray, spectrum_data: np.ndarray) -> tuple[bool, int]
+        
+        Args:
+            callback: A callable that takes:
+                - prb_blacklist (np.ndarray): Array of blacklisted PRB indices
+                - spectrum_data (np.ndarray): Averaged spectrum data in dB (offset corrected)
+                
+                Returns:
+                - update_sampling (bool): Whether to update the sampling threshold
+                - sampling_threshold (int): The new sampling threshold value (0-100)
+        
+        Example:
+            def my_custom_logic(prb_blacklist, spectrum_data):
+                # Custom logic here
+                update = len(prb_blacklist) > 10
+                new_threshold = 10 if update else 5
+                return update, new_threshold
+            
+            dapp.set_sampling_threshold_control_logic(my_custom_logic)
+        """
+        if callback is not None and not callable(callback):
+            raise ValueError("Callback must be callable")
+        self._sampling_threshold_control_callback = callback
+        dapp_logger.info(f"Custom control logic callback {'set' if callback else 'removed'}")
+
+    def create_prb_blacklist_control(self, blacklisted_prbs: bytes, prb_count: int,
+                                     update_sampling: bool = False,
+                                     validity_period: int = None) -> bytes:
+        """Create a PRB blacklist control message
+        
+        Args:
+            blacklisted_prbs: Raw PRB data as bytes (properly ordered)
+            prb_count: Size of the list
+            update_sampling: Check if the sampling threshold if the I/Qs should be updated (optional)
+            validity_period: How long this blacklist is valid in seconds (optional)
+            
+        Returns:
+            Encoded bytes for E3-ControlAction.actionData
+        """
+        control_data = {
+            "blacklistedPRBs": blacklisted_prbs,
+            "prbCount": prb_count
+        }
+
+        if update_sampling:
+            control_data["samplingThreshold"] = self.sampling_threshold
+                
+        if validity_period is not None:
+            control_data["validityPeriod"] = validity_period
+        
+        dapp_logger.debug(control_data)
+        
+        return self._encode_spectrum_message("Spectrum-PRBBlacklistControl", control_data)
+
+    def _encode_spectrum_message(self, message_type: str, data: dict) -> bytes:
+        """Encode a spectrum message using the configured encoding method
+        
+        Args:
+            message_type: The spectrum message type to encode
+            data: The data dictionary to encode
+            
+        Returns:
+            Encoded bytes
+        """
+        if self.encoding_method == "asn1":
+            if self.spectrum_encoder is None:
+                raise RuntimeError("ASN.1 encoder not initialized")
+            return self.spectrum_encoder.encode(message_type, data)
+        elif self.encoding_method == "json":
+            # Future: Implement JSON encoding
+            import json
+            return json.dumps(data).encode('utf-8')
+        else:
+            raise ValueError(f"Unsupported encoding method: {self.encoding_method}")
+
+    def decode_iq_data_indication(self, data: bytes) -> dict:
+        """Decode an IQ data indication message
+        
+        Args:
+            data: Encoded bytes from E3-IndicationMessage.protocolData
+            
+        Returns:
+            Dictionary containing the decoded indication data
+        """
+        return self._decode_spectrum_message("Spectrum-IQDataIndication", data)
+    
+    def decode_config_control(self, data: bytes) -> dict:
+        """Decode a spectrum configuration control message
+        
+        Args:
+            data: Encoded bytes from E3-ControlAction.actionData
+            
+        Returns:
+            Dictionary containing the decoded control data
+        """
+        return self._decode_spectrum_message("Spectrum-ConfigControl", data)
+
+    def _decode_spectrum_message(self, message_type: str, data: bytes) -> dict:
+        """Decode a spectrum message using the configured encoding method
+        
+        Args:
+            message_type: The spectrum message type to decode
+            data: The encoded bytes to decode
+            
+        Returns:
+            Decoded data dictionary
+        """
+        if self.encoding_method == "asn1":
+            if self.spectrum_encoder is None:
+                raise RuntimeError("ASN.1 encoder not initialized")
+            return self.spectrum_encoder.decode(message_type, data)
+        elif self.encoding_method == "json":
+            # Future: Implement JSON decoding
+            raise NotImplementedError("Json not implemented yet")
+            import json
+            return json.loads(data.decode('utf-8'))
+        else:
+            raise ValueError(f"Unsupported encoding method: {self.encoding_method}")
+
+    def get_iqs_from_ran(self, dapp_identifier, data):
+        dapp_logger.debug(f'Triggered callback for dApp {dapp_identifier}')
+        indication_message = self.decode_iq_data_indication(data)
+        iqs_raw = indication_message["iqSamples"]
+        sample_count = indication_message["sampleCount"]
+        timestamp = indication_message.get("timestamp", None)
+        dapp_logger.debug(f"Received {sample_count} samples with timestamp {timestamp}")
+        
         if self.save_iqs:
             dapp_logger.debug("I will write on the logfile iqs")
             self.save_counter += 1
-            self.iq_save_file.write(data)
+            self.iq_save_file.write(iqs_raw)
             self.iq_save_file.flush()
             if self.save_counter > self.limit_per_file:
                 self.iq_save_file.close()
                 self.iq_save_file = open(f"{LOG_DIR}/iqs_{int(time.time())}.bin", "ab")
                
-        iq_arr = np.frombuffer(data, dtype=np.int16)
+        iq_arr = np.frombuffer(iqs_raw, dtype=np.int16)
         dapp_logger.debug(f"Shape of iq_arr {iq_arr.shape}")
 
         if self.iqPlotterGui:
@@ -130,14 +288,30 @@ class SpectrumSharingDApp(DApp):
                 # prb_blk_list = np.array([76, 77,  78,  79, 80, 81, 82, 83], dtype=np.uint16) # 76, 77,  78,  79, 80, 81, 82, 83
                 # prb_blk_list = np.arange(start=76, stop=140, dtype=np.uint16)
                 dapp_logger.info(f"Blacklisted prbs ({prb_blk_list.size}): {prb_blk_list}")
+                
+                # Apply custom control logic if callback is set
+                update_sampling = False
+                if self._sampling_threshold_control_callback is not None:
+                    try:
+                        update_sampling, new_sampling_threshold = self._sampling_threshold_control_callback(
+                            prb_blk_list, abs_iq_av_db_offset_correct
+                        )
+                        if update_sampling:
+                            self.sampling_threshold = new_sampling_threshold
+                            dapp_logger.info(f"Custom logic updated sampling threshold to {self.sampling_threshold}")
+                    except Exception as e:
+                        dapp_logger.error(f"Error in custom control callback: {e}")
+                        update_sampling = False
+                
                 prb_new = prb_blk_list.view(prb_blk_list.dtype.newbyteorder('>'))
-                
-                # Create the payload
-                size = prb_blk_list.size.to_bytes(2,'little')
                 prbs_to_send = prb_new.tobytes(order="C")
+
+               
+                control_payload = self.create_prb_blacklist_control(blacklisted_prbs=prbs_to_send,
+                                                                    prb_count=prb_blk_list.size,
+                                                                    update_sampling=update_sampling)
                 
-                # Schedule the delivery
-                self.e3_interface.schedule_control(size+prbs_to_send)
+                self.e3_interface.schedule_control(dappId=self.dapp_id, ranFunctionId=self.RAN_FUNCTION_ID, actionData=control_payload)
 
                 if self.energyGui:
                     self.sig_queue.put(abs_iq_av_db)

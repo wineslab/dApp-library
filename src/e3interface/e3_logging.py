@@ -1,7 +1,6 @@
 import logging
-import os
 
-LOG_DIR = ('.' if os.geteuid() != 0 else '') + '/logs/'
+LOG_DIR = '/tmp/'
 
 def setup_logger(name, log_file, level=logging.INFO, format_str="[%(name)s] [%(created)f] %(levelname)s - %(message)s"):
     logger = logging.getLogger(name)

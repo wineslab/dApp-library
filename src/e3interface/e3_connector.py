@@ -169,9 +169,7 @@ class ZMQConnector(E3Connector):
     def setup_outbound_connection(self):
         self.outbound_context = zmq.Context()
         self.outbound_socket = self.outbound_context.socket(zmq.PUB)
-        self.outbound_socket.bind(self.outbound_endpoint)
-        if self.transport_layer == E3TransportLayer.IPC:
-            os.chmod(self.DAPP_IPC_SOCKET_PATH, 0o666)
+        self.outbound_socket.connect(self.outbound_endpoint)
     
     def send(self, payload: bytes):
         self.outbound_socket.send(payload)
@@ -241,9 +239,7 @@ class POSIXConnector(E3Connector):
     
     def setup_inbound_connection(self):
         self.inbound_socket = self._create_socket()
-        self.inbound_socket.bind(self.inbound_endpoint)
-        self.inbound_socket.listen(5)        
-        self.inbound_connection, _ = self.inbound_socket.accept()
+        self.inbound_socket.connect(self.inbound_endpoint)
 
     def receive_in_chunks(self, conn):
         data = bytearray()
@@ -272,7 +268,7 @@ class POSIXConnector(E3Connector):
         return bytes(data)
     
     def receive(self) -> bytes:
-        return self.receive_in_chunks(self.inbound_connection) 
+        return self.receive_in_chunks(self.inbound_socket) 
 
     def setup_outbound_connection(self):
         self.outbound_socket = self._create_socket()
@@ -284,12 +280,19 @@ class POSIXConnector(E3Connector):
     def dispose(self):
         if hasattr(self, "outbound_socket"):
             self.outbound_socket.close()
-        if hasattr(self, "inbound_connection"):
-            self.inbound_connection.close()
         if hasattr(self, "inbound_socket"):
             self.inbound_socket.close()
         
         if self.transport_layer == E3TransportLayer.IPC:
-            os.remove(self.E3_IPC_SETUP_PATH)    
-            os.remove(self.E3_IPC_SOCKET_PATH)    
-            os.remove(self.DAPP_IPC_SOCKET_PATH)             
+            try:
+                os.remove(self.E3_IPC_SETUP_PATH)    
+            except FileNotFoundError:
+                pass
+            try:
+                os.remove(self.E3_IPC_SOCKET_PATH)    
+            except FileNotFoundError:
+                pass
+            try:
+                os.remove(self.DAPP_IPC_SOCKET_PATH)
+            except FileNotFoundError:
+                pass             

@@ -10,20 +10,36 @@
 // Function to encode an E3 PDU
 int encode_E3_PDU(E3_PDU_t *pdu, uint8_t **buffer, size_t *buffer_size) {
     if (pdu->present == E3_PDU_PR_setupRequest) {
-        printf("Encoding setupRequest: ranIdentifier = %ld\n", pdu->choice.setupRequest->ranIdentifier);
-        printf("ranFunctionsList count = %d\n", pdu->choice.setupRequest->ranFunctionsList.list.count);
-        for (size_t i = 0; i < pdu->choice.setupRequest->ranFunctionsList.list.count; i++) {
-            printf("ranFunction[%zu] = %ld\n", i, pdu->choice.setupRequest->ranFunctionsList.list.array[i][0]);
+        printf("Encoding setupRequest: ID = %ld, dAppIdentifier = %ld, type = %ld\n", 
+               pdu->choice.setupRequest->id,
+               pdu->choice.setupRequest->dAppIdentifier,
+               pdu->choice.setupRequest->type);
+        printf("ranFunctionList count = %d\n", pdu->choice.setupRequest->ranFunctionList.list.count);
+        for (size_t i = 0; i < pdu->choice.setupRequest->ranFunctionList.list.count; i++) {
+            printf("ranFunction[%zu] = %ld\n", i, pdu->choice.setupRequest->ranFunctionList.list.array[i][0]);
         }
     }
     else if (pdu->present == E3_PDU_PR_indicationMessage) {
-        printf("Encoding indicationMessage:\n");
+        printf("Encoding indicationMessage: ID = %ld\n", pdu->choice.indicationMessage->id);
         printf("Message len = %ld\n", pdu->choice.indicationMessage->protocolData.size);
         for (size_t i = 0; i < pdu->choice.indicationMessage->protocolData.size; i++) {
             printf("protocolData[%zu] = %d\n", i, pdu->choice.indicationMessage->protocolData.buf[i]);
         }
-    } else {
-        printf("Unexpected PDU choice\n");
+    }
+    else if (pdu->present == E3_PDU_PR_subscriptionRequest) {
+        printf("Encoding subscriptionRequest: ID = %ld, type = %ld, ranFunctionId = %ld\n",
+               pdu->choice.subscriptionRequest->id,
+               pdu->choice.subscriptionRequest->type,
+               pdu->choice.subscriptionRequest->ranFunctionIdentifier);
+    }
+    else if (pdu->present == E3_PDU_PR_messageAck) {
+        printf("Encoding messageAck: ID = %ld, requestId = %ld, responseCode = %ld\n",
+               pdu->choice.messageAck->id,
+               pdu->choice.messageAck->requestId,
+               pdu->choice.messageAck->responseCode);
+    }
+    else {
+        printf("Unexpected PDU choice: %d\n", pdu->present);
         return -1;
     }
 
@@ -62,19 +78,25 @@ E3_PDU_t *decode_E3_PDU(uint8_t *buffer, size_t buffer_size) {
 }
 
 long parse_setup_response(E3_SetupResponse_t *response){
-    printf("Parsing setupResponse: responseCode = %ld\n", response->responseCode);
-    if (response->responseCode == 0)
-    {
+    printf("Parsing setupResponse: ID = %ld, requestId = %ld, responseCode = %ld\n", 
+           response->id, response->requestId, response->responseCode);
+    
+    if (response->responseCode == 0) {
         printf("Response is positive.\n");
-    }
-    else if (response->responseCode == 1)
-    {
+    } else if (response->responseCode == 1) {
         printf("Response is negative.\n");
-    }
-    else
-    {
+    } else {
         printf("Unknown response code.\n");
     }
+    
+    // Print RAN function list if present
+    if (response->ranFunctionList.list.count > 0) {
+        printf("ranFunctionList count = %d\n", response->ranFunctionList.list.count);
+        for (size_t i = 0; i < response->ranFunctionList.list.count; i++) {
+            printf("ranFunction[%zu] = %ld\n", i, response->ranFunctionList.list.array[i][0]);
+        }
+    }
+    
     return response->responseCode;
 }
 
@@ -90,9 +112,14 @@ uint8_t* parse_control_action(E3_ControlAction_t *controlAction){
 }
 
 // Function to create an E3 Setup Request PDU
-E3_PDU_t* create_setup_request(long ranIdentifier, long *ranFunctions, size_t ranFunctionsCount) {
-    if (ranIdentifier < 0 || ranIdentifier > 15) {
-        fprintf(stderr, "Invalid ranIdentifier: must be in range 0 to 15\n");
+E3_PDU_t* create_setup_request(long msgId, int dappIdentifier, long *ranFunctions, size_t ranFunctionsCount, long actionType) {
+    if (dappIdentifier < 0 || dappIdentifier > 100) {
+        fprintf(stderr, "Invalid dappIdentifier: must be in range 0 to 100\n");
+        return NULL;
+    }
+
+    if (msgId < 1 || msgId > 100) {
+        fprintf(stderr, "Invalid msgId: must be in range 1 to 100\n");
         return NULL;
     }
 
@@ -112,29 +139,42 @@ E3_PDU_t* create_setup_request(long ranIdentifier, long *ranFunctions, size_t ra
         return NULL;
     }
 
-    pdu->choice.setupRequest->ranIdentifier = ranIdentifier;
+    // Set message ID
+    pdu->choice.setupRequest->id = msgId;
+    
+    // Set dApp identifier (changed from ranIdentifier)
+    pdu->choice.setupRequest->dAppIdentifier = dappIdentifier;
+    
+    // Set action type
+    pdu->choice.setupRequest->type = actionType;
 
-    pdu->choice.setupRequest->ranFunctionsList.list.count = ranFunctionsCount;
-    pdu->choice.setupRequest->ranFunctionsList.list.size = ranFunctionsCount * sizeof(long);
-    pdu->choice.setupRequest->ranFunctionsList.list.array = malloc(pdu->choice.setupRequest->ranFunctionsList.list.size);
+    // Set RAN functions list (changed from ranFunctionsList to ranFunctionList)
+    pdu->choice.setupRequest->ranFunctionList.list.count = ranFunctionsCount;
+    pdu->choice.setupRequest->ranFunctionList.list.size = ranFunctionsCount * sizeof(long);
+    pdu->choice.setupRequest->ranFunctionList.list.array = malloc(pdu->choice.setupRequest->ranFunctionList.list.size);
 
-    if (!pdu->choice.setupRequest->ranFunctionsList.list.array) {
-        fprintf(stderr, "Failed to allocate memory for ranFunctionsList array\n");
+    if (!pdu->choice.setupRequest->ranFunctionList.list.array) {
+        fprintf(stderr, "Failed to allocate memory for ranFunctionList array\n");
         free(pdu->choice.setupRequest);
         free(pdu);
         return NULL;
     }
 
     for (size_t i = 0; i < ranFunctionsCount; i++) {
-        pdu->choice.setupRequest->ranFunctionsList.list.array[i] = malloc(sizeof(long *));
-        pdu->choice.setupRequest->ranFunctionsList.list.array[i][0] = ranFunctions[i];
+        pdu->choice.setupRequest->ranFunctionList.list.array[i] = malloc(sizeof(long *));
+        pdu->choice.setupRequest->ranFunctionList.list.array[i][0] = ranFunctions[i];
     }
 
     return pdu;
 }
 
 // Function to create an E3 Indication Message
-E3_PDU_t* create_indication_message(const int32_t *payload, size_t payload_length) {
+E3_PDU_t* create_indication_message(long msgId, const int32_t *payload, size_t payload_length) {
+    if (msgId < 1 || msgId > 100) {
+        fprintf(stderr, "Invalid msgId: must be in range 1 to 100\n");
+        return NULL;
+    }
+
     E3_PDU_t *pdu = malloc(sizeof(E3_PDU_t));
     if (!pdu) {
         printf("Failed to allocate memory for E3_PDU\n");
@@ -150,6 +190,9 @@ E3_PDU_t* create_indication_message(const int32_t *payload, size_t payload_lengt
         return NULL;
     }
 
+    // Set message ID
+    pdu->choice.indicationMessage->id = msgId;
+
     pdu->choice.indicationMessage->protocolData.buf = malloc(payload_length);
     if (!pdu->choice.indicationMessage->protocolData.buf) {
         printf("Failed to allocate memory for protocolData\n");
@@ -160,6 +203,108 @@ E3_PDU_t* create_indication_message(const int32_t *payload, size_t payload_lengt
     pdu->choice.indicationMessage->protocolData.size = payload_length;
 
     return pdu;
+}
+
+// Function to create an E3 Subscription Request
+E3_PDU_t* create_subscription_request(long msgId, long actionType, long ranFunctionId) {
+    if (msgId < 1 || msgId > 100) {
+        fprintf(stderr, "Invalid msgId: must be in range 1 to 100\n");
+        return NULL;
+    }
+
+    if (ranFunctionId < 0 || ranFunctionId > 100) {
+        fprintf(stderr, "Invalid ranFunctionId: must be in range 0 to 100\n");
+        return NULL;
+    }
+
+    E3_PDU_t *pdu = malloc(sizeof(E3_PDU_t));
+    if (!pdu) {
+        fprintf(stderr, "Failed to allocate memory for E3_PDU_t\n");
+        return NULL;
+    }
+
+    memset(pdu, 0, sizeof(E3_PDU_t));
+    pdu->present = E3_PDU_PR_subscriptionRequest;
+
+    pdu->choice.subscriptionRequest = calloc(1, sizeof(E3_SubscriptionRequest_t));
+    if (!pdu->choice.subscriptionRequest) {
+        fprintf(stderr, "Failed to allocate memory for E3_SubscriptionRequest_t\n");
+        free(pdu);
+        return NULL;
+    }
+
+    pdu->choice.subscriptionRequest->id = msgId;
+    pdu->choice.subscriptionRequest->type = actionType;
+    pdu->choice.subscriptionRequest->ranFunctionIdentifier = ranFunctionId;
+
+    return pdu;
+}
+
+// Function to create an E3 Message Acknowledgment
+E3_PDU_t* create_message_ack(long msgId, long requestId, long responseCode) {
+    if (msgId < 1 || msgId > 100) {
+        fprintf(stderr, "Invalid msgId: must be in range 1 to 100\n");
+        return NULL;
+    }
+
+    if (requestId < 1 || requestId > 100) {
+        fprintf(stderr, "Invalid requestId: must be in range 1 to 100\n");
+        return NULL;
+    }
+
+    E3_PDU_t *pdu = malloc(sizeof(E3_PDU_t));
+    if (!pdu) {
+        fprintf(stderr, "Failed to allocate memory for E3_PDU_t\n");
+        return NULL;
+    }
+
+    memset(pdu, 0, sizeof(E3_PDU_t));
+    pdu->present = E3_PDU_PR_messageAck;
+
+    pdu->choice.messageAck = calloc(1, sizeof(E3_MessageAck_t));
+    if (!pdu->choice.messageAck) {
+        fprintf(stderr, "Failed to allocate memory for E3_MessageAck_t\n");
+        free(pdu);
+        return NULL;
+    }
+
+    pdu->choice.messageAck->id = msgId;
+    pdu->choice.messageAck->requestId = requestId;
+    pdu->choice.messageAck->responseCode = responseCode;
+
+    return pdu;
+}
+
+// Function to parse subscription response
+long parse_subscription_response(E3_SubscriptionResponse_t *response) {
+    printf("Parsing subscriptionResponse: ID = %ld, requestId = %ld, responseCode = %ld\n", 
+           response->id, response->requestId, response->responseCode);
+    
+    if (response->responseCode == 0) {
+        printf("Subscription response is positive.\n");
+    } else if (response->responseCode == 1) {
+        printf("Subscription response is negative.\n");
+    } else {
+        printf("Unknown subscription response code.\n");
+    }
+    
+    return response->responseCode;
+}
+
+// Function to parse message acknowledgment
+long parse_message_ack(E3_MessageAck_t *ack) {
+    printf("Parsing messageAck: ID = %ld, requestId = %ld, responseCode = %ld\n", 
+           ack->id, ack->requestId, ack->responseCode);
+    
+    if (ack->responseCode == 0) {
+        printf("Message ACK is positive.\n");
+    } else if (ack->responseCode == 1) {
+        printf("Message ACK is negative.\n");
+    } else {
+        printf("Unknown ACK response code.\n");
+    }
+    
+    return ack->responseCode;
 }
 
 // Function to free an E3 PDU

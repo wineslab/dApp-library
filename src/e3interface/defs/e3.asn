@@ -1,27 +1,63 @@
 E3 DEFINITIONS AUTOMATIC TAGS ::= BEGIN
 
     E3-SetupRequest ::= SEQUENCE {
-        ranIdentifier         INTEGER (0..15),
-        ranFunctionsList      SEQUENCE OF INTEGER (0..255)
+        id                   E3-MessageID,
+        dAppIdentifier       INTEGER (0..100),
+        ranFunctionList      SEQUENCE OF INTEGER (0..255),
+        type                 E3-ActionType
     }
 
     E3-SetupResponse ::= SEQUENCE {
-        responseCode          ENUMERATED {positive(0), negative(1)}
+        id                   E3-MessageID,
+        requestId            E3-MessageID,
+        responseCode         E3-ResponseCode,
+        ranFunctionList      SEQUENCE OF INTEGER (0..255)
+    }
+
+    E3-SubscriptionRequest ::= SEQUENCE {
+        id                   E3-MessageID,
+        dAppIdentifier       INTEGER (0..100),
+        type                 E3-ActionType,
+        ranFunctionIdentifier   INTEGER (0..100)
+    }
+
+    E3-SubscriptionResponse ::= SEQUENCE {
+        id                   E3-MessageID,
+        requestId            E3-MessageID,
+        responseCode         E3-ResponseCode
     }
 
     E3-IndicationMessage ::= SEQUENCE {
-        protocolData          OCTET STRING (SIZE(1..16384))
+        id                   E3-MessageID,
+        dAppIdentifier       INTEGER (0..100),
+        protocolData         OCTET STRING (SIZE (1..32768))
     }
 
     E3-ControlAction ::= SEQUENCE {
-        actionData            OCTET STRING (SIZE(1..64))
+        id                   E3-MessageID,
+        dAppIdentifier       INTEGER (0..100),
+        ranFunctionIdentifier   INTEGER (0..100),
+        actionData           OCTET STRING (SIZE (1..32768))
     }
+
+    E3-MessageAck ::= SEQUENCE {
+        id                   E3-MessageID,
+        requestId            E3-MessageID,
+        responseCode         E3-ResponseCode
+    }
+
+    E3-MessageID ::= INTEGER (1..100)
+    E3-ActionType ::= ENUMERATED { insert(0), update(1), delete(2) }
+    E3-ResponseCode ::= ENUMERATED { positive(0), negative(1) }
 
     E3-PDU ::= CHOICE {
         setupRequest          [0] E3-SetupRequest,
         setupResponse         [1] E3-SetupResponse,
-        indicationMessage     [2] E3-IndicationMessage,
-        controlAction         [3] E3-ControlAction
+        subscriptionRequest   [2] E3-SubscriptionRequest,
+        subscriptionResponse  [3] E3-SubscriptionResponse,
+        indicationMessage     [4] E3-IndicationMessage,
+        controlAction         [5] E3-ControlAction,
+        messageAck            [6] E3-MessageAck
     }
 
 END
