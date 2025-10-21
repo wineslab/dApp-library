@@ -72,6 +72,8 @@ def main(args, time_to_wait: float = 60.0):
     if not response:
         raise ValueError("RAN refused Setup")
     
+    print(f"Setup Complete - RAN function available: {ranFunctionList}")
+
     # atm we subscribe to all
     dapp.send_subscription_request(ranFunctionList)
     

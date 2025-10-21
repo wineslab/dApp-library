@@ -44,6 +44,7 @@ class DApp(ABC):
             response, ranFunctionList = self.e3_interface.send_setup_request(self.dapp_id)
             dapp_logger.info(f'E3 Setup Response: {response}')
             if response:
+               self.e3_interface.setup_connections()
                return response, ranFunctionList
             dapp_logger.warning('RAN refused setup or dApp was not able to connect, waiting 2 secs')
             time.sleep(2)
