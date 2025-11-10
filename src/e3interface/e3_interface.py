@@ -53,20 +53,18 @@ class E3Interface:
             response = self.e3_connector.send_setup_request(payload)
         except ConnectionRefusedError as e:
             e3_logger.error(f"Unable to connect to E3 setup endpoint, connection refused: {e}")
-            return False
+            return False, None
 
         e3_logger.info("Setup response received")
         pdu = self.encoder.decode_pdu(response)
         if pdu[0] == "setupResponse":
             e3_setup_response = pdu[1]
             e3_logger.info(e3_setup_response)
-            positive_outcome = e3_setup_response['responseCode'] == 'positive'
-            if not positive_outcome:
-                raise ConnectionRefusedError("E3AP Setup Request Failed")
-            return positive_outcome, e3_setup_response['ranFunctionList']
+            outcome = e3_setup_response['responseCode'] == 'positive'
+            return outcome, e3_setup_response.get('ranFunctionList', None)
         else:
             e3_logger.error(f"Unexpected PDU type {pdu[0]}")
-            return False
+            return False, None
 
     def send_subscription_request(self, ranFunctionId: int, dappId: int = 1, actionType: str = "insert") -> bool:
         """Send a subscription request to the E3 interface"""

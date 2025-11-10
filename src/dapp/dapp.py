@@ -40,7 +40,7 @@ class DApp(ABC):
             self.e3_interface.add_callback(self.dapp_id, callback)
 
     def setup_connection(self):
-        while True:    
+        while True:
             response, ranFunctionList = self.e3_interface.send_setup_request(self.dapp_id)
             dapp_logger.info(f'E3 Setup Response: {response}')
             if response:
