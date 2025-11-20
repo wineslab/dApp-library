@@ -4,7 +4,7 @@ Example script to showcase the Spectrum Sharing dApp
 """
 
 import argparse
-import multiprocessing
+import threading
 import time
 
 from e3interface.e3_connector import E3LinkLayer, E3TransportLayer
@@ -14,12 +14,12 @@ LOG_DIR = '/tmp/'
 
 def stop_program(time_to_wait, dapp: SpectrumSharingDApp):
     time.sleep(time_to_wait)
-    print("Stop is called")
-    dapp.stop()
+    print(f"[INFO] Timer elapsed after {time_to_wait} seconds")
+    dapp.stop_event.set()
     time.sleep(0.5) # to allow proper closure of the dApp threads, irrelevant to profiling
-    print("Test completed")
+    print("[INFO] Stopping of the dApp completed")
 
-def main(args, time_to_wait: float = 60.0):
+def main(args):
     # with open(f"{LOG_DIR}/busy.txt", "w") as f:
     #     f.close()
 
@@ -70,15 +70,15 @@ def main(args, time_to_wait: float = 60.0):
     response, ranFunctionList = dapp.setup_connection()   
     
     if not response:
-        raise ValueError("RAN refused Setup")
+        raise ValueError("[WARNING] RAN refused Setup")
     
-    print(f"Setup Complete - RAN function available: {ranFunctionList}")
+    print(f"[INFO] Setup Complete - RAN function available: {ranFunctionList}")
 
     # atm we subscribe to all
     dapp.send_subscription_request(ranFunctionList)
     
     if args.timed:
-        timer = multiprocessing.Process(target=stop_program, args=(time_to_wait, dapp))
+        timer = threading.Thread(target=stop_program, args=(args.timed, dapp), daemon=False)
         timer.start()
     else:
         timer = None
@@ -86,8 +86,12 @@ def main(args, time_to_wait: float = 60.0):
     try:
         dapp.control_loop()
     finally:
-        if args.timed:
-            timer.kill()
+        dapp.stop()
+        if args.timed and timer is not None:
+            if timer.is_alive():
+                timer.join(timeout=2)
+                if timer.is_alive():
+                    print("[ERROR] Timer thread did not terminate in time")
 
 
 if __name__ == "__main__":
@@ -105,7 +109,7 @@ if __name__ == "__main__":
     parser.add_argument('--num-subcarrier-spacing', type=int, default=30, help="Subcarrier spacing in kHz (FR1 is 30)")
     parser.add_argument('--e', action='store_true', default=False, help="Set if 3/4 sampling for FFT size is set on the gNB (-E option on OAI)")
     parser.add_argument('--center-freq', type=float, default=3.6192e9, help="Center frequency in Hz")
-    parser.add_argument('--timed', action='store_true', default=False, help="Run with a 5-minute time limit")
+    parser.add_argument('--timed', type=int, default=0, metavar='SECONDS', help="Run with a time limit (in seconds). 0 means no limit.")
     parser.add_argument('--model', type=str, default='', help="Path to the CNN model file to be used")
     parser.add_argument('--time-window', type=int, default=5, help="Number of input vectors to pass to the CNN model.")
     parser.add_argument('--moving-avg-window', type=int, default=30, help="Window size (in samples) for the moving average used to detect energy peaks in the spectrum.")

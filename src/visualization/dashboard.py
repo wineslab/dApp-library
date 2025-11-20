@@ -47,10 +47,10 @@ class Dashboard:
         return render_template("index.html")
 
     def run(self):
-        self.socketio.run(self.app, host="0.0.0.0", port=7778)
+        self.socketio.run(self.app, host="0.0.0.0", port=7778, debug=False, use_reloader=False)
 
     def _initialize_plot(self):
-        self.run_thread = threading.Thread(target=self.run)
+        self.run_thread = threading.Thread(target=self.run, daemon=True)
         self.run_thread.start()
 
     def handle_initial_connection(self):
@@ -97,8 +97,10 @@ class Dashboard:
 
     def stop(self):
         """Stops the server and kills the thread."""
+        # This is probably overkill since now the run thread it's a demon,
+        # still with timeout it does not impact the graceful exit
         if self.run_thread and self.run_thread.is_alive():
-            self.run_thread.join()
+            self.run_thread.join(timeout=1)
 
 if __name__ == "__main__":
     server_app = Dashboard()

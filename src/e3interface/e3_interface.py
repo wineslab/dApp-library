@@ -149,9 +149,11 @@ class E3Interface:
 
                     case _:
                         raise ValueError("Unrecognized PDU type ", pdu[0])
-                    
-        except Exception as e:
-            e3_logger.error(f"Error in inbound thread: {e}")
+        except KeyboardInterrupt:
+            e3_logger.debug("Inbound thread received SIGINT, stopping")
+            self.stop_event.set()
+        except Exception:
+            e3_logger.exception(f"Error in inbound thread")
             self.stop_event.set()
         finally:
             e3_logger.info("Close inbound connection")
@@ -188,9 +190,11 @@ class E3Interface:
 
                 e3_logger.debug(f"Send the pdu encoded {payload}")
                 self.e3_connector.send(payload)
-
-        except Exception as e:
-            e3_logger.error(f"Error outbound thread: {e}")
+        except KeyboardInterrupt:
+            e3_logger.debug("Outbound thread received SIGINT, stopping")
+            self.stop_event.set()
+        except Exception:
+            e3_logger.exception(f"Error in outbound thread")
             self.stop_event.set()
         finally:
             e3_logger.info("Close outbound connection")
@@ -259,10 +263,19 @@ class E3Interface:
         e3_logger.info("Stop event")
         self.stop_event.set()
         
-        if hasattr(self, "inbound_process"):
-            self.inbound_process.join()
-        if hasattr(self, "outbound_process"):
-            self.outbound_process.join()
+        if hasattr(self, "inbound_process") and self.inbound_process.is_alive():
+            self.inbound_process.join(timeout=2)
+            if self.inbound_process.is_alive():
+                e3_logger.warning("Inbound process did not terminate gracefully, forcing termination")
+                self.inbound_process.terminate()
+                self.inbound_process.join(timeout=1)
+                
+        if hasattr(self, "outbound_process") and self.outbound_process.is_alive():
+            self.outbound_process.join(timeout=2)
+            if self.outbound_process.is_alive():
+                e3_logger.warning("Outbound process did not terminate gracefully, forcing termination")
+                self.outbound_process.terminate()
+                self.outbound_process.join(timeout=1)
 
         self.e3_connector.dispose()
 

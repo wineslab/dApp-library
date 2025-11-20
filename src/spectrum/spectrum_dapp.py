@@ -6,6 +6,7 @@ dApp for Spectrum Sharing
 __author__ = "Andrea Lacava"
 
 import multiprocessing
+import queue
 import time
 import os
 import numpy as np
@@ -299,8 +300,8 @@ class SpectrumSharingDApp(DApp):
                         if update_sampling:
                             self.sampling_threshold = new_sampling_threshold
                             dapp_logger.info(f"Custom logic updated sampling threshold to {self.sampling_threshold}")
-                    except Exception as e:
-                        dapp_logger.error(f"Error in custom control callback: {e}")
+                    except Exception:
+                        dapp_logger.exception(f"Error in custom control callback")
                         update_sampling = False
                 
                 prb_new = prb_blk_list.view(prb_blk_list.dtype.newbyteorder('>'))
@@ -324,17 +325,27 @@ class SpectrumSharingDApp(DApp):
                 self.control_count = 1  
 
     def _control_loop(self):
-        if self.energyGui:
-            abs_iq_av_db = self.sig_queue.get()
-            self.energyPlotter.process_iq_data(abs_iq_av_db)
+        # If no GUIs are enabled, just sleep to avoid busy-waiting
+        if not (self.energyGui or self.iqPlotterGui or self.dashboard):
+            time.sleep(1)
+            return
 
-        if self.iqPlotterGui:
-            iq_data = self.iq_queue.get()
-            self.iqPlotter.process_iq_data(iq_data)
+        try:
+            if self.energyGui:    
+                abs_iq_av_db = self.sig_queue.get(timeout=0.1)
+                self.energyPlotter.process_iq_data(abs_iq_av_db)
 
-        if self.dashboard:
-            message = self.demo_queue.get()
-            self.demo.process_iq_data(message)
+            if self.iqPlotterGui:
+                iq_data = self.iq_queue.get(timeout=0.1)
+                self.iqPlotter.process_iq_data(iq_data)
+    
+            if self.dashboard:
+                message = self.demo_queue.get(timeout=0.1)
+                self.demo.process_iq_data(message)
+        except queue.Empty:
+            pass # This is allowed
+        except Exception:
+            dapp_logger.exception("[SPECTRUM] Error in the control loop")
 
     def _stop(self):        
         if self.save_iqs:

@@ -125,13 +125,19 @@ class ZMQConnector(E3Connector):
         while request_retries > 0:
             setup_socket = self.setup_context.socket(zmq.REQ)
             setup_socket.connect(self.setup_endpoint)
-            e3_logger.debug("Send E3 Setup request")
-            setup_socket.send(payload)
-
-            if (setup_socket.poll(request_timeout) & zmq.POLLIN) != 0:
-                reply = setup_socket.recv()
-                e3_logger.debug('ZMQ setup socket replied')
-                return reply
+            try:
+                e3_logger.debug("Send E3 Setup request")
+                setup_socket.send(payload)
+                if (setup_socket.poll(request_timeout) & zmq.POLLIN) != 0:
+                    reply = setup_socket.recv()
+                    e3_logger.debug('ZMQ setup socket replied')
+                    setup_socket.close()
+                    return reply
+            except KeyboardInterrupt:
+                e3_logger.debug("Keyboard interrupt, closing E3 Setup Socket")
+                setup_socket.setsockopt(zmq.LINGER, 0)
+                setup_socket.close()
+                raise
             
             request_retries -= 1
             e3_logger.error("ZMQ setup did not reply")
