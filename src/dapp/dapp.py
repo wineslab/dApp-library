@@ -49,10 +49,10 @@ class DApp(ABC):
             dapp_logger.warning('RAN refused setup or dApp was not able to connect, waiting 2 secs')
             time.sleep(2)
 
-    def send_subscription_request(self, ranFunctionIds: list):
+    def send_subscription_request(self, ranFunctionIds: list, actionType: str = "insert"):
         for ranFunctionId in ranFunctionIds:
-            scheduled = self.e3_interface.send_subscription_request(ranFunctionId)
-    
+            scheduled = self.e3_interface.send_subscription_request(ranFunctionId, actionType=actionType)
+
     @abstractmethod
     def _control_loop(self):
         pass
@@ -63,7 +63,8 @@ class DApp(ABC):
             while not self.stop_event.is_set():
                 self._control_loop()
         except KeyboardInterrupt:
-            dapp_logger.error("Keyboard interrupt, closing dApp")
+            dapp_logger.info("Keyboard interrupt received, closing dApp")
+        finally:
             self.stop()
 
     @abstractmethod
@@ -71,10 +72,15 @@ class DApp(ABC):
         pass
 
     def stop(self):
-        dapp_logger.info('Stop of the dApp')
-        self.stop_event.set()
-
-        self.e3_interface.terminate_connections()
-        dapp_logger.info("Stopped server")
-
-        self._stop()
+        try:
+            dapp_logger.info('Sending setup delete to unregister dApp from RAN')
+            outcome, _ = self.e3_interface.send_setup_request(self.dapp_id, actionType="delete")
+            dapp_logger.debug(f'Setup delete response: {outcome}')
+        except Exception as e:
+            dapp_logger.error(f'Failed to send setup delete request: {e}')
+        finally:
+                self.stop_event.set()
+                time.sleep(1)
+                self.e3_interface.terminate_connections()
+                dapp_logger.info("Stop. Program exit")
+                self._stop()

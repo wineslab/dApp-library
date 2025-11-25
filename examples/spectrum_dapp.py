@@ -65,7 +65,7 @@ def main(args):
 
     dapp = SpectrumSharingDApp(noise_floor_threshold=noise_floor_threshold, save_iqs=args.save_iqs, control=args.control, link=args.link, transport=args.transport,
                 energyGui=args.energy_gui, iqPlotterGui=args.iq_plotter_gui, dashboard=args.demo_gui, classifier=classifier, center_freq=args.center_freq,
-                num_prbs=args.num_prbs, e_sampling=args.e, num_subcarrier_spacing=args.num_subcarrier_spacing)
+                num_prbs=args.num_prbs, e_sampling=args.e, num_subcarrier_spacing=args.num_subcarrier_spacing, sampling_threshold=args.sampling_threshold)
 
     response, ranFunctionList = dapp.setup_connection()   
     
@@ -73,7 +73,7 @@ def main(args):
         raise ValueError("[WARNING] RAN refused Setup")
     
     print(f"[INFO] Setup Complete - RAN function available: {ranFunctionList}")
-
+    time.sleep(1)
     # atm we subscribe to all
     dapp.send_subscription_request(ranFunctionList)
     
@@ -86,7 +86,6 @@ def main(args):
     try:
         dapp.control_loop()
     finally:
-        dapp.stop()
         if args.timed and timer is not None:
             if timer.is_alive():
                 timer.join(timeout=2)
@@ -114,6 +113,8 @@ if __name__ == "__main__":
     parser.add_argument('--time-window', type=int, default=5, help="Number of input vectors to pass to the CNN model.")
     parser.add_argument('--moving-avg-window', type=int, default=30, help="Window size (in samples) for the moving average used to detect energy peaks in the spectrum.")
     parser.add_argument('--extraction-window', type=int, default=600, help="Number of samples to retain after detecting an energy peak.")
+    parser.add_argument('--sampling-threshold', type=int, default=5, help="Sampling ratio for the IQ captures, one delivery each sampling threshold")
+
 
     args = parser.parse_args()
     print("Start dApp")

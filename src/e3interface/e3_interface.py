@@ -43,12 +43,12 @@ class E3Interface:
             # Use the provided encoder directly
             self.encoder = encoder
             self.outbound_queue = multiprocessing.Queue()
-    
-    def send_setup_request(self, dappId: int = 1) -> bool | list:
+
+    def send_setup_request(self, dappId: int = 1, actionType: str = "insert") -> tuple[bool, list | None]:
         """Send a setup request to the E3 interface"""
-        e3_logger.info("Start setup request")
+        e3_logger.info(f"Send setup request for dApp ID {dappId} with actionType {actionType}")
         msg_id = self._get_next_message_id()
-        payload = self.encoder.create_setup_request(dappId, msgId=msg_id)
+        payload = self.encoder.create_setup_request(dappId, msgId=msg_id, actionType=actionType)
         try:
             response = self.e3_connector.send_setup_request(payload)
         except ConnectionRefusedError as e:
@@ -102,9 +102,8 @@ class E3Interface:
         # Two connections, one for the inbound the other for the outbound
         self.inbound_process =  multiprocessing.Process(target=self._inbound_connection)
         self.outbound_process = multiprocessing.Process(target=self._outbound_connection)
-        
         self.inbound_process.start()
-        self.outbound_process.start()    
+        self.outbound_process.start()
 
     def _inbound_connection(self):
         """

@@ -57,7 +57,7 @@ This dApp implements a spectrum sharing use case discussed in [our paper](https:
 - `--center-freq` - Center frequency in Hz (default: 3.6192e9, which is 3.6192 GHz)
 
 **Execution Control:**
-- `--timed` - Run the dApp with a 5-minute time limit and then automatically exit
+- `--timed SECONDS` - Run the dApp with a time limit (in seconds). Set to 0 for no limit (default: 0)
 
 **AI/ML Model Configuration:**
 - `--model` - Path to a pre-trained CNN model file for spectrum classification. If not provided, uses rule-based detection
@@ -66,6 +66,7 @@ This dApp implements a spectrum sharing use case discussed in [our paper](https:
 **Signal Processing Parameters:**
 - `--moving-avg-window` - Window size (in samples) for the moving average filter used to smooth energy measurements and detect peaks in the spectrum (default: 30)
 - `--extraction-window` - Number of samples to retain after detecting an energy peak for further analysis (default: 600)
+- `--sampling-threshold` - Down-sampling ratio applied to IQ sensing. An IQ vector will be delivered every Nth sensing (default: 5)
 
 If you use the dApp concept and/or the framework to develop your own dApps, please cite the following paper:
 
