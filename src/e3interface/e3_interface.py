@@ -143,8 +143,18 @@ class E3Interface:
                     
                     case "xAppControlAction":
                         e3_xapp_control_action = pdu[1]
-                        # not in the ASN yet but already theorized for E2SM
-                        raise NotImplementedError()
+
+                        dapp_identifier = e3_xapp_control_action["dAppIdentifier"]
+                        ran_function_id = e3_xapp_control_action["ranFunctionIdentifier"]
+                        xapp_control_data = e3_xapp_control_action["xAppControlData"]
+
+                        e3_logger.info(
+                            f"Received xAppControlAction: "
+                            f"dApp={dapp_identifier}, ranFunc={ran_function_id}, "
+                            f"payload={len(xapp_control_data)} bytes, "
+                            f"xAppControlAction payload (hex): {xapp_control_data.hex()}"
+                        )
+                         # TODO extend self._handle_incoming_data(dapp_identifier, protocolData) to discriminate among messages
 
                     case _:
                         raise ValueError("Unrecognized PDU type ", pdu[0])
@@ -183,7 +193,7 @@ class E3Interface:
                     case "ack":
                         payload = self.encoder.create_message_ack(data['msgId'], data['requestId'], data['responseCode'])
                     case "report":
-                        payload = self.encoder.create_dapp_report(data['msgId'], data['reportData'])
+                        payload = self.encoder.create_dapp_report(data['msgId'], data['dappId'], data['ranFunctionId'], data['reportData'])
                     case _:
                         raise ValueError("Unrecognized value ", msg)
 
@@ -214,11 +224,13 @@ class E3Interface:
             'ranFunctionId': ranFunctionId,
             'actionData': actionData
         }))
-    
-    def schedule_report(self, reportData: bytes):
+
+    def schedule_report(self, dappId: int, ranFunctionId: int, reportData: bytes):
         msg_id = self._get_next_message_id()
         self.outbound_queue.put(('report', {
             'msgId': msg_id,
+            'dappId': dappId,
+            'ranFunctionId': ranFunctionId,
             'reportData': reportData
         }))
 

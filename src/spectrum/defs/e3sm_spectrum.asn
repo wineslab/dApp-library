@@ -43,6 +43,14 @@ Spectrum-ConfigControl ::= SEQUENCE {
     enable                  BOOLEAN OPTIONAL                 -- Enable/disable spectrum monitoring
 }
 
+-- ============================================================================
+-- DAPP REPORT STRUCTURES 
+-- ============================================================================
+
+Spectrum-PRBBlacklistReport ::= SEQUENCE {
+    prbCount                INTEGER (0..maxPRBs),
+    blacklistedPRBs         OCTET STRING (SIZE (0..maxPRBs))
+}
 
 -- ============================================================================
 -- CONSTANTS AND CONSTRAINTS

@@ -119,12 +119,12 @@ class AsnE3Encoder(E3Encoder):
         }
         return self.encode_pdu("indicationMessage", indication_message_data)
     
-    def create_dapp_report(self, msgId: int, reportData: bytes) -> bytes:
+    def create_dapp_report(self, msgId: int, dappId: int, ranFunctionId: int, reportData: bytes) -> bytes:
         """Create a dApp report message"""
-        # Note: dAppReport is not defined in current ASN.1 spec
-        raise NotImplementedError("Not implemented yet")
         dapp_report_data = {
             "id": msgId,
+            "dAppIdentifier": dappId,
+            "ranFunctionIdentifier": ranFunctionId,
             "reportData": reportData
         }
         return self.encode_pdu("dAppReport", dapp_report_data)

@@ -167,6 +167,25 @@ class SpectrumSharingDApp(DApp):
         
         return self._encode_spectrum_message("Spectrum-PRBBlacklistControl", control_data)
 
+    def create_prb_blacklist_report(self, blacklisted_prbs: bytes, prb_count: int) -> bytes:
+        """Create a PRB blacklist report message
+
+        Args:
+            blacklisted_prbs: Raw PRB data as bytes (properly ordered)
+            prb_count: Size of the list
+            
+        Returns:
+            Encoded bytes for E3-DAppReport.reportData
+        """
+        report_data = {
+            "blacklistedPRBs": blacklisted_prbs,
+            "prbCount": prb_count
+        }
+
+        dapp_logger.debug(report_data)
+
+        return self._encode_spectrum_message("Spectrum-PRBBlacklistReport", report_data)
+
     def _encode_spectrum_message(self, message_type: str, data: dict) -> bytes:
         """Encode a spectrum message using the configured encoding method
         
@@ -311,8 +330,13 @@ class SpectrumSharingDApp(DApp):
                 control_payload = self.create_prb_blacklist_control(blacklisted_prbs=prbs_to_send,
                                                                     prb_count=prb_blk_list.size,
                                                                     update_sampling=update_sampling)
+                report_payload = self.create_prb_blacklist_report(
+                    blacklisted_prbs=prbs_to_send,
+                    prb_count=prb_blk_list.size
+                )
                 
                 self.e3_interface.schedule_control(dappId=self.dapp_id, ranFunctionId=self.RAN_FUNCTION_ID, actionData=control_payload)
+                self.e3_interface.schedule_report(dappId=self.dapp_id, ranFunctionId=self.RAN_FUNCTION_ID, reportData=report_payload)
 
                 if self.energyGui:
                     self.sig_queue.put(abs_iq_av_db)
