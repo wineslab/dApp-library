@@ -138,14 +138,13 @@ class SpectrumSharingDApp(DApp):
         self._sampling_threshold_control_callback = callback
         dapp_logger.info(f"Custom control logic callback {'set' if callback else 'removed'}")
 
-    def create_prb_blacklist_control(self, blacklisted_prbs: bytes, prb_count: int,
+    def create_prb_blacklist_control(self, blacklisted_prbs: list[int],
                                      update_sampling: bool = False,
                                      validity_period: int = None) -> bytes:
         """Create a PRB blacklist control message
         
         Args:
-            blacklisted_prbs: Raw PRB data as bytes (properly ordered)
-            prb_count: Size of the list
+            blacklisted_prbs: List of PRB indices
             update_sampling: Check if the sampling threshold if the I/Qs should be updated (optional)
             validity_period: How long this blacklist is valid in seconds (optional)
             
@@ -153,8 +152,7 @@ class SpectrumSharingDApp(DApp):
             Encoded bytes for E3-ControlAction.actionData
         """
         control_data = {
-            "blacklistedPRBs": blacklisted_prbs,
-            "prbCount": prb_count
+            "blacklistedPRBs": blacklisted_prbs
         }
 
         if update_sampling:
@@ -167,19 +165,17 @@ class SpectrumSharingDApp(DApp):
         
         return self._encode_spectrum_message("Spectrum-PRBBlacklistControl", control_data)
 
-    def create_prb_blacklist_report(self, blacklisted_prbs: bytes, prb_count: int) -> bytes:
+    def create_prb_blacklist_report(self, blacklisted_prbs: list[int]) -> bytes:
         """Create a PRB blacklist report message
 
         Args:
-            blacklisted_prbs: Raw PRB data as bytes (properly ordered)
-            prb_count: Size of the list
+            blacklisted_prbs: List of PRB indices
             
         Returns:
             Encoded bytes for E3-DAppReport.reportData
         """
         report_data = {
-            "blacklistedPRBs": blacklisted_prbs,
-            "prbCount": prb_count
+            "blacklistedPRBs": blacklisted_prbs
         }
 
         dapp_logger.debug(report_data)
@@ -201,9 +197,7 @@ class SpectrumSharingDApp(DApp):
                 raise RuntimeError("ASN.1 encoder not initialized")
             return self.spectrum_encoder.encode(message_type, data)
         elif self.encoding_method == "json":
-            # Future: Implement JSON encoding
-            import json
-            return json.dumps(data).encode('utf-8')
+            raise NotImplementedError("JSON Encoding for the Spectrum SM not implemented yet")
         else:
             raise ValueError(f"Unsupported encoding method: {self.encoding_method}")
 
@@ -244,10 +238,7 @@ class SpectrumSharingDApp(DApp):
                 raise RuntimeError("ASN.1 encoder not initialized")
             return self.spectrum_encoder.decode(message_type, data)
         elif self.encoding_method == "json":
-            # Future: Implement JSON decoding
-            raise NotImplementedError("Json not implemented yet")
-            import json
-            return json.loads(data.decode('utf-8'))
+            raise NotImplementedError("JSON Encoding for the Spectrum SM not implemented yet")
         else:
             raise ValueError(f"Unsupported encoding method: {self.encoding_method}")
 
@@ -323,17 +314,10 @@ class SpectrumSharingDApp(DApp):
                         dapp_logger.exception(f"Error in custom control callback")
                         update_sampling = False
                 
-                prb_new = prb_blk_list.view(prb_blk_list.dtype.newbyteorder('>'))
-                prbs_to_send = prb_new.tobytes(order="C")
-
+                prb_list_for_asn = prb_blk_list.astype(int).tolist()
                
-                control_payload = self.create_prb_blacklist_control(blacklisted_prbs=prbs_to_send,
-                                                                    prb_count=prb_blk_list.size,
-                                                                    update_sampling=update_sampling)
-                report_payload = self.create_prb_blacklist_report(
-                    blacklisted_prbs=prbs_to_send,
-                    prb_count=prb_blk_list.size
-                )
+                control_payload = self.create_prb_blacklist_control(blacklisted_prbs=prb_list_for_asn, update_sampling=update_sampling)
+                report_payload = self.create_prb_blacklist_report(blacklisted_prbs=prb_list_for_asn)
                 
                 self.e3_interface.schedule_control(dappId=self.dapp_id, ranFunctionId=self.RAN_FUNCTION_ID, actionData=control_payload)
                 self.e3_interface.schedule_report(dappId=self.dapp_id, ranFunctionId=self.RAN_FUNCTION_ID, reportData=report_payload)
