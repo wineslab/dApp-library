@@ -291,7 +291,6 @@ class SpectrumSharingDApp(DApp):
                 # PRB blocking based on the noise floor threshold
                 f_ind = np.arange(self.fft_size)
                 blklist_sub_carrier = f_ind[abs_iq_av_db_offset_correct > self.noise_floor_threshold]
-                np.sort(blklist_sub_carrier)
                 dapp_logger.info(f'blklist_sub_carrier: {blklist_sub_carrier}')
                 prb_blk_list = np.unique((np.floor(blklist_sub_carrier/self.num_consecutive_subcarriers_for_prb))).astype(np.uint16)
                 dapp_logger.info(f'prb_blk_list: {prb_blk_list}')
