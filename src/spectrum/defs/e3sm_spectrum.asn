@@ -34,6 +34,10 @@ Spectrum-PRBBlacklistControl ::= SEQUENCE {
 -- xAPP CONTROL ACTION STRUCTURES  
 -- ============================================================================
 
+-- Control payload for RAN function 1
+Spectrum-PRBBlockedControl ::= SEQUENCE {
+    blockedPRBs             SEQUENCE (SIZE (0..maxPRBs)) OF INTEGER (0..maxPRBIndex)
+}
 
 -- Spectrum Configuration Control
 Spectrum-ConfigControl ::= SEQUENCE {

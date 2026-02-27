@@ -148,13 +148,7 @@ class E3Interface:
                         ran_function_id = e3_xapp_control_action["ranFunctionIdentifier"]
                         xapp_control_data = e3_xapp_control_action["xAppControlData"]
 
-                        e3_logger.info(
-                            f"Received xAppControlAction: "
-                            f"dApp={dapp_identifier}, ranFunc={ran_function_id}, "
-                            f"payload={len(xapp_control_data)} bytes, "
-                            f"xAppControlAction payload (hex): {xapp_control_data.hex()}"
-                        )
-                         # TODO extend self._handle_incoming_data(dapp_identifier, protocolData) to discriminate among messages
+                        self._handle_incoming_data(dapp_identifier, xapp_control_data, ran_function_id=ran_function_id)
 
                     case _:
                         raise ValueError("Unrecognized PDU type ", pdu[0])
@@ -208,11 +202,10 @@ class E3Interface:
         finally:
             e3_logger.info("Close outbound connection")
 
-    def _handle_incoming_data(self, dapp_identifier, data):
+    def _handle_incoming_data(self, dapp_identifier, data, ran_function_id=None):
         if dapp_identifier in self.callbacks:
-            e3_logger.debug(f"Launch {len(self.callbacks[dapp_identifier])} callback(s) for dApp {dapp_identifier}")
             for callback in self.callbacks[dapp_identifier]:
-                callback(dapp_identifier, data)
+                callback(dapp_identifier, data, ran_function_id)
         else:
             e3_logger.warning(f"No callback registered for dApp {dapp_identifier}")
                 

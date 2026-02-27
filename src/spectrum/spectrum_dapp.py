@@ -62,6 +62,7 @@ class SpectrumSharingDApp(DApp):
         self.noise_floor_threshold = noise_floor_threshold
         self.save_iqs = save_iqs
         self.e3_interface.add_callback(self.dapp_id, self.get_iqs_from_ran)
+        self.e3_interface.add_callback(self.dapp_id, self.handle_xapp_control)
         self.sampling_threshold = sampling_threshold
         if self.save_iqs:
             from iq_saver.iq_saver import IQSaver
@@ -258,8 +259,30 @@ class SpectrumSharingDApp(DApp):
         else:
             raise ValueError(f"Unsupported encoding method: {self.encoding_method}")
 
-    def get_iqs_from_ran(self, dapp_identifier, data):
+    def handle_xapp_control(self, dapp_identifier, data, ran_function_id=None):
+        # Skip indication messages — handled by the other callback
+        if ran_function_id is None:
+            return
+        
+        dapp_logger.info(f'Triggered control callback for dApp {dapp_identifier}, ranFunc={ran_function_id}')
+        match ran_function_id:
+            case 1:  # Spectrum
+                decoded = self._decode_spectrum_message("Spectrum-PRBBlockedControl", data)
+                blocked = decoded["blockedPRBs"]
+                dapp_logger.info(f"xApp control: blockedPRBs={blocked}")
+
+                control_payload = self.create_prb_blacklist_control(blacklisted_prbs=blocked)
+                self.e3_interface.schedule_control(dappId=self.dapp_id, ranFunctionId=self.RAN_FUNCTION_ID, actionData=control_payload)
+                dapp_logger.info(f"Sending Control to RAN: blockedPRBs={blocked}")
+            case _:
+                dapp_logger.warning(f"Unknown ran_function_id={ran_function_id}")
+
+    def get_iqs_from_ran(self, dapp_identifier, data, ran_function_id=None):
         dapp_logger.debug(f'Triggered callback for dApp {dapp_identifier}')
+
+        if ran_function_id is not None:
+            return
+
         indication_message = self.decode_iq_data_indication(data)
         iqs_raw = indication_message["iqSamples"]
         sample_count = indication_message["sampleCount"]
@@ -334,25 +357,12 @@ class SpectrumSharingDApp(DApp):
                         update_sampling = False
                 
                 prb_list_for_asn = prb_blk_list.astype(int).tolist()
-               
-                control_payload = self.create_prb_blacklist_control(blacklisted_prbs=prb_list_for_asn, update_sampling=update_sampling)
+
                 report_payload = self.create_prb_blacklist_report(blacklisted_prbs=prb_list_for_asn)
-                
-                self.e3_interface.schedule_control(dappId=self.dapp_id, ranFunctionId=self.RAN_FUNCTION_ID, actionData=control_payload)
+#                control_payload = self.create_prb_blacklist_control(blacklisted_prbs=prb_list_for_asn, update_sampling=update_sampling)
+
                 self.e3_interface.schedule_report(dappId=self.dapp_id, ranFunctionId=self.RAN_FUNCTION_ID, reportData=report_payload)
-                
-                # Add annotation to IQ recording
-                if self.save_iqs and sample_idx is not None:
-                    dapp_logger.info(f"Add annotation")
-                    self.iq_saver.add_annotation(
-                        start_sample=sample_idx,
-                        label="prb_control",
-                        comment=f"Blacklisted {prb_blk_list.size} PRBs due to interference",
-                        prb_blacklist=prb_blk_list.tolist(),
-                        noise_threshold=self.noise_floor_threshold,
-                        control_action="blacklist"
-                    )
-                    dapp_logger.info(f"Annnotation added")
+#                self.e3_interface.schedule_control(dappId=self.dapp_id, ranFunctionId=self.RAN_FUNCTION_ID, actionData=control_payload)
 
                 if self.energyGui:
                     self.sig_queue.put(abs_iq_av_db)
