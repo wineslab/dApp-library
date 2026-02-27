@@ -21,7 +21,7 @@ classifiers = [
 "Programming Language :: Python :: Implementation :: CPython",
 "Programming Language :: Python :: Implementation :: PyPy"
 ]
-dependencies = [ "asn1tools", "typing_extensions", "numpy", "pyzmq" ]
+dependencies = [ "asn1tools", "typing_extensions", "numpy", "pyzmq", "sigmf" ]
 
 
 [[project.authors]]
@@ -61,6 +61,7 @@ packages = [
 "src/dapp",
 "src/e3interface",
 "src/spectrum",
+"src/iq_saver",
 "src/visualization"
 ]
 sources = [ "src" ]

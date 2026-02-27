@@ -64,9 +64,25 @@ class SpectrumSharingDApp(DApp):
         self.e3_interface.add_callback(self.dapp_id, self.get_iqs_from_ran)
         self.sampling_threshold = sampling_threshold
         if self.save_iqs:
-            self.iq_save_file = open(f"{LOG_DIR}/iqs_{int(time.time())}.bin", "ab")
-            self.save_counter = 0
-            self.limit_per_file = 200
+            from iq_saver.iq_saver import IQSaver
+            # Calculate effective sample rate based on sampling_threshold
+            # Each capture is: 10ms * sampling_threshold
+            sample_rate = 100 # Hz since sensing is done once every 10ms
+            dapp_logger.info(f"Sensing sample rate: {sample_rate:.2f} Hz (Each sensing is done 10ms")
+            
+            self.iq_saver = IQSaver(
+                base_path=LOG_DIR,
+                center_freq=self.center_freq,
+                bandwidth=self.bw,
+                sample_rate=sample_rate,
+                annotation_flush_interval=10,
+                hw_info=f"FFT:{self.fft_size}, PRBs:{self.num_prbs}, E-sampling:{e_sampling}",
+                description=f"5G NR Uplink capture from SpectrumSharing dApp - RAN Function {self.RAN_FUNCTION_ID}",
+                fft_size=self.fft_size,
+                num_prbs=self.num_prbs,
+                subcarrier_spacing_khz=self.num_subcarrier_spacing,
+                sampling_threshold=self.sampling_threshold
+            )
         self.control = control
         dapp_logger.info(f"Control is {'not ' if not self.control else ''}active")
 
@@ -250,17 +266,16 @@ class SpectrumSharingDApp(DApp):
         timestamp = indication_message.get("timestamp", None)
         dapp_logger.debug(f"Received {sample_count} samples with timestamp {timestamp}")
         
-        if self.save_iqs:
-            dapp_logger.debug("I will write on the logfile iqs")
-            self.save_counter += 1
-            self.iq_save_file.write(iqs_raw)
-            self.iq_save_file.flush()
-            if self.save_counter > self.limit_per_file:
-                self.iq_save_file.close()
-                self.iq_save_file = open(f"{LOG_DIR}/iqs_{int(time.time())}.bin", "ab")
-               
+        # Convert raw bytes to numpy array
         iq_arr = np.frombuffer(iqs_raw, dtype=np.int16)
         dapp_logger.debug(f"Shape of iq_arr {iq_arr.shape}")
+        
+        # Save IQ samples using SigMF-compliant IQSaver
+        sample_idx = None
+        if self.save_iqs:
+            # Convert to complex for IQSaver (it handles int16 interleaved I/Q)
+            iq_comp = iq_arr[::2] + iq_arr[1::2] * 1j
+            sample_idx = self.iq_saver.save_samples(iq_comp.astype(np.complex64), timestamp=timestamp)
 
         if self.iqPlotterGui:
             self.iq_queue.put(iq_arr)
@@ -278,7 +293,7 @@ class SpectrumSharingDApp(DApp):
             self.control_count += 1
             dapp_logger.debug(f"Control count is: {self.control_count}")
 
-            if self.control_count == self.average_over_frames:
+            if self.control_count >= self.average_over_frames:
                 abs_iq_av_db =  20 * np.log10(1 + (self.abs_iq_av/(self.average_over_frames)))
                 abs_iq_av_db_offset_correct = np.append(abs_iq_av_db[self.first_carrier_offset:self.fft_size],abs_iq_av_db[0:self.first_carrier_offset])
                 dapp_logger.info(f'--- AVG VALUES ----')
@@ -309,6 +324,11 @@ class SpectrumSharingDApp(DApp):
                         if update_sampling:
                             self.sampling_threshold = new_sampling_threshold
                             dapp_logger.info(f"Custom logic updated sampling threshold to {self.sampling_threshold}")
+                            # Update IQSaver sample rate to reflect new sampling threshold
+                            if self.save_iqs:
+                                new_sample_rate = 1 / (0.01 * self.sampling_threshold)
+                                self.iq_saver.update_sample_rate(new_sample_rate, sampling_threshold=self.sampling_threshold)
+                                dapp_logger.info(f"Updated IQ saver sample rate to {new_sample_rate:.2f} Hz (sampling_threshold={self.sampling_threshold})")
                     except Exception:
                         dapp_logger.exception(f"Error in custom control callback")
                         update_sampling = False
@@ -320,6 +340,19 @@ class SpectrumSharingDApp(DApp):
                 
                 self.e3_interface.schedule_control(dappId=self.dapp_id, ranFunctionId=self.RAN_FUNCTION_ID, actionData=control_payload)
                 self.e3_interface.schedule_report(dappId=self.dapp_id, ranFunctionId=self.RAN_FUNCTION_ID, reportData=report_payload)
+                
+                # Add annotation to IQ recording
+                if self.save_iqs and sample_idx is not None:
+                    dapp_logger.info(f"Add annotation")
+                    self.iq_saver.add_annotation(
+                        start_sample=sample_idx,
+                        label="prb_control",
+                        comment=f"Blacklisted {prb_blk_list.size} PRBs due to interference",
+                        prb_blacklist=prb_blk_list.tolist(),
+                        noise_threshold=self.noise_floor_threshold,
+                        control_action="blacklist"
+                    )
+                    dapp_logger.info(f"Annnotation added")
 
                 if self.energyGui:
                     self.sig_queue.put(abs_iq_av_db)
@@ -356,7 +389,7 @@ class SpectrumSharingDApp(DApp):
 
     def _stop(self):        
         if self.save_iqs:
-            self.iq_save_file.close()
+            self.iq_saver.close()
         
         if self.dashboard:
             self.demo.stop()

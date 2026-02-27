@@ -6,6 +6,7 @@ Example script to showcase the Spectrum Sharing dApp
 import argparse
 import threading
 import time
+import logging
 
 from e3interface.e3_connector import E3LinkLayer, E3TransportLayer
 from spectrum.spectrum_dapp import SpectrumSharingDApp
@@ -91,6 +92,8 @@ def main(args):
                 timer.join(timeout=2)
                 if timer.is_alive():
                     print("[ERROR] Timer thread did not terminate in time")
+    
+    logging.shutdown()
 
 
 if __name__ == "__main__":
