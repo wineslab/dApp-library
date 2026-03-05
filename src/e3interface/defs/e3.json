@@ -1,0 +1,494 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "_copyright": "Copyright (c) 2026, Andrea Lacava.  All rights reserved.",
+  "$defs": {
+    "E3-SetupRequest": {
+      "type": "object",
+      "properties": {
+        "e3apProtocolVersion": {
+          "$ref": "#/$defs/E3-Version"
+        },
+        "dAppName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "dAppVersion": {
+          "$ref": "#/$defs/E3-Version"
+        },
+        "vendor": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "required": [
+        "e3apProtocolVersion",
+        "dAppName",
+        "dAppVersion",
+        "vendor"
+      ]
+    },
+    "E3-SetupResponse": {
+      "type": "object",
+      "properties": {
+        "requestId": {
+          "$ref": "#/$defs/E3-MessageID"
+        },
+        "responseCode": {
+          "$ref": "#/$defs/E3-ResponseCode"
+        },
+        "ranIdentifier": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "e3apProtocolVersion": {
+          "$ref": "#/$defs/E3-Version"
+        },
+        "dAppIdentifier": {
+          "$ref": "#/$defs/E3-DAppID"
+        },
+        "ranFunctionList": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/E3-RanFunctionDefinition"
+          }
+        }
+      },
+      "required": [
+        "requestId",
+        "responseCode",
+        "ranIdentifier"
+      ]
+    },
+    "E3-SubscriptionRequest": {
+      "type": "object",
+      "properties": {
+        "dAppIdentifier": {
+          "$ref": "#/$defs/E3-DAppID"
+        },
+        "ranFunctionIdentifier": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "telemetryIdentifierList": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 100,
+          "items": {
+            "type": "integer"
+          }
+        },
+        "controlIdentifierList": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 100,
+          "items": {
+            "type": "integer"
+          }
+        },
+        "subscriptionTime": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3600
+        },
+        "periodicity": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000
+        }
+      },
+      "required": [
+        "dAppIdentifier",
+        "ranFunctionIdentifier",
+        "telemetryIdentifierList",
+        "controlIdentifierList"
+      ]
+    },
+    "E3-SubscriptionDelete": {
+      "type": "object",
+      "properties": {
+        "dAppIdentifier": {
+          "$ref": "#/$defs/E3-DAppID"
+        },
+        "subscriptionId": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        }
+      },
+      "required": [
+        "dAppIdentifier",
+        "subscriptionId"
+      ]
+    },
+    "E3-SubscriptionResponse": {
+      "type": "object",
+      "properties": {
+        "requestId": {
+          "$ref": "#/$defs/E3-MessageID"
+        },
+        "dAppIdentifier": {
+          "$ref": "#/$defs/E3-DAppID"
+        },
+        "responseCode": {
+          "$ref": "#/$defs/E3-ResponseCode"
+        },
+        "subscriptionId": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "telemetryIdentifierList": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 100,
+          "items": {
+            "type": "integer"
+          }
+        },
+        "controlIdentifierList": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 100,
+          "items": {
+            "type": "integer"
+          }
+        }
+      },
+      "required": [
+        "requestId",
+        "dAppIdentifier",
+        "responseCode"
+      ]
+    },
+    "E3-RanFunctionDefinition": {
+      "type": "object",
+      "properties": {
+        "ranFunctionIdentifier": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "telemetryIdentifierList": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 100,
+          "items": {
+            "type": "integer"
+          }
+        },
+        "controlIdentifierList": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 100,
+          "items": {
+            "type": "integer"
+          }
+        },
+        "ranFunctionData": {
+          "type": "object",
+          "description": "Generic object representation"
+        }
+      },
+      "required": [
+        "ranFunctionIdentifier",
+        "telemetryIdentifierList",
+        "controlIdentifierList",
+        "ranFunctionData"
+      ]
+    },
+    "E3-IndicationMessage": {
+      "type": "object",
+      "properties": {
+        "dAppIdentifier": {
+          "$ref": "#/$defs/E3-DAppID"
+        },
+        "ranFunctionIdentifier": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "protocolData": {
+          "type": "object",
+          "description": "Generic object representation"
+        }
+      },
+      "required": [
+        "dAppIdentifier",
+        "ranFunctionIdentifier",
+        "protocolData"
+      ]
+    },
+    "E3-DAppControlAction": {
+      "type": "object",
+      "properties": {
+        "dAppIdentifier": {
+          "$ref": "#/$defs/E3-DAppID"
+        },
+        "ranFunctionIdentifier": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "controlIdentifier": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "actionData": {
+          "type": "object",
+          "description": "Generic object representation"
+        }
+      },
+      "required": [
+        "dAppIdentifier",
+        "ranFunctionIdentifier",
+        "controlIdentifier",
+        "actionData"
+      ]
+    },
+    "E3-DAppReport": {
+      "type": "object",
+      "properties": {
+        "dAppIdentifier": {
+          "$ref": "#/$defs/E3-DAppID"
+        },
+        "ranFunctionIdentifier": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "reportData": {
+          "type": "object",
+          "description": "Generic object representation"
+        }
+      },
+      "required": [
+        "dAppIdentifier",
+        "ranFunctionIdentifier",
+        "reportData"
+      ]
+    },
+    "E3-XAppControlAction": {
+      "type": "object",
+      "properties": {
+        "dAppIdentifier": {
+          "$ref": "#/$defs/E3-DAppID"
+        },
+        "ranFunctionIdentifier": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "xAppControlData": {
+          "type": "object",
+          "description": "Generic object representation"
+        }
+      },
+      "required": [
+        "dAppIdentifier",
+        "ranFunctionIdentifier",
+        "xAppControlData"
+      ]
+    },
+    "E3-ReleaseMessage": {
+      "type": "object",
+      "properties": {
+        "dAppIdentifier": {
+          "$ref": "#/$defs/E3-DAppID"
+        }
+      },
+      "required": [
+        "dAppIdentifier"
+      ]
+    },
+    "E3-MessageAck": {
+      "type": "object",
+      "properties": {
+        "requestId": {
+          "$ref": "#/$defs/E3-MessageID"
+        },
+        "responseCode": {
+          "$ref": "#/$defs/E3-ResponseCode"
+        }
+      },
+      "required": [
+        "requestId",
+        "responseCode"
+      ]
+    },
+    "E3-DAppID": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100
+    },
+    "E3-MessageID": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000
+    },
+    "E3-Version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 11
+    },
+    "E3-ResponseCode": {
+      "type": "string",
+      "enum": [
+        "positive",
+        "negative"
+      ]
+    },
+    "E3-PDU": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/E3-MessageID"
+        },
+        "msg": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "setupRequest": {
+                  "$ref": "#/$defs/E3-SetupRequest"
+                }
+              },
+              "required": [
+                "setupRequest"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "setupResponse": {
+                  "$ref": "#/$defs/E3-SetupResponse"
+                }
+              },
+              "required": [
+                "setupResponse"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "subscriptionRequest": {
+                  "$ref": "#/$defs/E3-SubscriptionRequest"
+                }
+              },
+              "required": [
+                "subscriptionRequest"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "subscriptionDelete": {
+                  "$ref": "#/$defs/E3-SubscriptionDelete"
+                }
+              },
+              "required": [
+                "subscriptionDelete"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "subscriptionResponse": {
+                  "$ref": "#/$defs/E3-SubscriptionResponse"
+                }
+              },
+              "required": [
+                "subscriptionResponse"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "indicationMessage": {
+                  "$ref": "#/$defs/E3-IndicationMessage"
+                }
+              },
+              "required": [
+                "indicationMessage"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "dAppControlAction": {
+                  "$ref": "#/$defs/E3-DAppControlAction"
+                }
+              },
+              "required": [
+                "dAppControlAction"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "dAppReport": {
+                  "$ref": "#/$defs/E3-DAppReport"
+                }
+              },
+              "required": [
+                "dAppReport"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "xAppControlAction": {
+                  "$ref": "#/$defs/E3-XAppControlAction"
+                }
+              },
+              "required": [
+                "xAppControlAction"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "releaseMessage": {
+                  "$ref": "#/$defs/E3-ReleaseMessage"
+                }
+              },
+              "required": [
+                "releaseMessage"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "messageAck": {
+                  "$ref": "#/$defs/E3-MessageAck"
+                }
+              },
+              "required": [
+                "messageAck"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "msg"
+      ]
+    }
+  }
+}

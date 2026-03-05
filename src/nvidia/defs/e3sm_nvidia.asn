@@ -1,0 +1,48 @@
+-- E3 Service Model ASN.1 Definitions for NVIDIA Aerial
+-- This service model extends E3 messages for extracting data from Nvidia Aerial
+--
+-- Usage with E3 Protocol:
+-- - NVIDIA-IndicationData structures are encoded into the protocolData field of E3-IndicationMessage
+-- - NVIDIA-ControlData structures are encoded into the actionData field of E3-DAppControlAction
+
+NVIDIA-SM DEFINITIONS AUTOMATIC TAGS ::= BEGIN
+
+-- ============================================================================
+-- INDICATION MESSAGE STRUCTURES
+-- ============================================================================
+
+-- NVIDIA IQ Data Indication (raw I/Q samples from RAN)
+NVIDIA-DataIndication ::= SEQUENCE {
+    iqSamples               OCTET STRING (SIZE (1..16384)),  -- Raw I/Q data as int16 array
+    sampleCount             INTEGER (0..32768),              -- Number of I/Q samples
+    timestamp               INTEGER (0..2147483647) OPTIONAL -- Unix timestamp when samples were captured
+}
+
+-- ============================================================================
+-- CONTROL ACTION STRUCTURES  
+-- ============================================================================
+
+-- At the moment, NVIDIA does not offer a control
+
+-- ============================================================================
+-- xAPP CONTROL ACTION STRUCTURES  
+-- ============================================================================
+
+-- Here we set the xApp control messages structures to control the behavior of the dApp
+
+-- NVIDIA Configuration Control
+NVIDIA-ConfigControl ::= SEQUENCE {
+    enable                  BOOLEAN OPTIONAL                 -- Enable/disable NVIDIA monitoring
+}
+
+-- ============================================================================
+-- DAPP REPORT STRUCTURES 
+-- ============================================================================
+
+
+-- ============================================================================
+-- CONSTANTS AND CONSTRAINTS
+-- ============================================================================
+
+
+END

@@ -19,6 +19,8 @@ class IQSaver:
     Features:
     - Single-file recording
     - Timestamp-indexed annotation (can be added post-capture)
+        - Per-annotation wall-clock timestamps stored as `spear:timestamp` and exported
+            to the SigMF `core:datetime` field when written
     - Semantic waveform description support
     - High-performance write (no compression during capture)
     - Complete SigMF metadata with custom 'spear:' namespace
@@ -74,7 +76,10 @@ class IQSaver:
         self._file_handle: Optional[object] = None
         self._filename: Optional[str] = None
         self._data_path: Optional[str] = None
-        self._sample_count: int = 0
+        
+        # Counters
+        self._sample_count: int = 0      # saved frame count (for flush threshold)
+        self._iq_sample_count: int = 0   # actual IQ samples written (for sample_start)
         self._is_initialized: bool = False
         
         # Annotation tracking
@@ -119,7 +124,7 @@ class IQSaver:
                 SigMFFile.SAMPLE_RATE_KEY: self.sample_rate,
                 SigMFFile.AUTHOR_KEY: self.author,
                 SigMFFile.DESCRIPTION_KEY: self.description,
-                SigMFFile.VERSION_KEY: "1.0.0",
+                SigMFFile.VERSION_KEY: sigmf.__specification__,
             }
         )
         
@@ -223,16 +228,21 @@ class IQSaver:
         # Write to file
         write_data.tofile(self._file_handle)
         
-        # Update sample count
-        sample_index = self._sample_count
-        self._sample_count += num_samples
-        
+        # Update counters:
+        # - return the true IQ sample offset (before this write)
+        # - increment frame counter (used for annotation flush threshold)
+        # - increment IQ sample counter by number of samples written
+        sample_index = self._iq_sample_count
+        self._sample_count += 1
+        self._iq_sample_count += num_samples
+
         return sample_index
     
     def add_annotation(self,
                       start_sample: Optional[int] = None,
                       label: str = "",
                       comment: str = "",
+                      timestamp: Optional[float] = None,
                       **custom_fields) -> bool:
         """
         Add annotation to capture.
@@ -241,6 +251,9 @@ class IQSaver:
             start_sample: Sample offset (if None, uses current sample count)
             label: Annotation label (e.g., "prb_control", "interference")
             comment: Human-readable description
+            timestamp: Wall-clock Unix timestamp in seconds for this annotation. If provided
+                it will be stored as `spear:timestamp` and translated to the SigMF
+                `core:datetime` field when annotations are flushed.
             **custom_fields: Custom annotation fields (stored with spear: prefix)
             
         Returns:
@@ -258,17 +271,23 @@ class IQSaver:
         if not self._is_initialized:
             return False
         
-        # Build annotation
+        # Build annotation. Default sample_start uses true IQ sample offset.
         annotation = {
-            "sample_start": start_sample if start_sample is not None else self._sample_count,
+            "sample_start": start_sample if start_sample is not None else self._iq_sample_count,
             "label": label,
         }
         
         if comment:
             annotation["comment"] = comment
+
+        # Store provided wall-clock timestamp in the annotation (preserve original key)
+        if timestamp is not None:
+            annotation["spear:timestamp"] = timestamp
         
         # Add custom fields with spear: prefix
         for key, value in custom_fields.items():
+            if isinstance(value, np.ndarray):
+                value = value.tolist()
             annotation[f"spear:{key}"] = value
         
         # Add to buffer
@@ -294,16 +313,20 @@ class IQSaver:
             
             # Build metadata dict for annotation
             ann_metadata = {}
-            
+
             # Add core fields
             if "label" in annotation:
                 ann_metadata[SigMFFile.LABEL_KEY] = annotation["label"]
             if "comment" in annotation:
                 ann_metadata[SigMFFile.COMMENT_KEY] = annotation["comment"]
-            
-            # Add custom spear: fields
+
+            # If the annotation carries a wall-clock timestamp, map it to the SigMF datetime
+            if "spear:timestamp" in annotation:
+                ann_metadata[SigMFFile.DATETIME_KEY] = self._get_iso8601_timestamp(annotation["spear:timestamp"])
+
+            # Add custom spear: fields (exclude reserved keys)
             for key, value in annotation.items():
-                if key.startswith("spear:") and key not in ["sample_start", "label", "comment"]:
+                if key.startswith("spear:") and key not in ["spear:timestamp"]:
                     ann_metadata[key] = value
             
             # Add annotation without length parameter
@@ -333,11 +356,11 @@ class IQSaver:
         
         This method creates a new capture segment to mark the sampling threshold change.
         Note: The global sample_rate is NOT changed - it represents the actual sensing rate.
-        Only the spear:sampling_threshold is updated per capture segment.
-        Useful when sampling parameters change during a recording session.
+        Only the spear:sampling_threshold and spear:effective_sample_rate are updated per
+        capture segment, making the time axis reconstructable without external context.
         
         Args:
-            new_sample_rate: New effective sample rate in Hz (for reference/logging)
+            new_sample_rate: New effective sample rate in Hz (stored in capture segment metadata)
             sampling_threshold: New sampling threshold value (creates new capture segment)
             
         Example:
@@ -349,23 +372,26 @@ class IQSaver:
         # The global sample_rate represents the actual sensing rate which is constant
         
         # Create a new capture segment if initialized and sampling_threshold provided
-        if self._sigmf is not None and sampling_threshold is not None:
-            # Create a new capture segment at the current sample position
-            # to mark the change in sampling parameters
-            capture_metadata = {
-                SigMFFile.FREQUENCY_KEY: self.center_freq,
-                SigMFFile.DATETIME_KEY: self._get_iso8601_timestamp(),
-            }
-            
-            if self.bandwidth:
-                capture_metadata["core:bandwidth"] = self.bandwidth
-            
-            capture_metadata["spear:sampling_threshold"] = sampling_threshold
-            # Update metadata_kwargs so future references have the new value
-            self.metadata_kwargs['sampling_threshold'] = sampling_threshold
-            
-            # Add new capture segment at current sample position
-            self._sigmf.add_capture(self._sample_count, metadata=capture_metadata)
+        if self._sigmf is None or sampling_threshold is None:
+            return
+        
+        # Create a new capture segment at the current sample position
+        # to mark the change in sampling parameters
+        capture_metadata = {
+            SigMFFile.FREQUENCY_KEY: self.center_freq,
+            SigMFFile.DATETIME_KEY: self._get_iso8601_timestamp(),
+            "spear:sampling_threshold": sampling_threshold,
+            "spear:effective_sample_rate": new_sample_rate,
+        }
+
+        if self.bandwidth:
+            capture_metadata["core:bandwidth"] = self.bandwidth
+        
+        # Update metadata_kwargs so future references have the new value
+        self.metadata_kwargs['sampling_threshold'] = sampling_threshold
+    
+        # Add new capture segment at current IQ sample position
+        self._sigmf.add_capture(self._iq_sample_count, metadata=capture_metadata)
     
     def close(self) -> None:
         """

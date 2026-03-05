@@ -1,0 +1,40 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "_copyright": "Copyright (c) 2026, Andrea Lacava.  All rights reserved.",
+  "$defs": {
+    "NVIDIA-DataIndication": {
+      "type": "object",
+      "properties": {
+        "iqSamples": {
+          "type": "string",
+          "contentEncoding": "base16",
+          "pattern": "^([0-9a-fA-F]{2})*$",
+          "minLength": 1,
+          "maxLength": 16384
+        },
+        "sampleCount": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 32768
+        },
+        "timestamp": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2147483647
+        }
+      },
+      "required": [
+        "iqSamples",
+        "sampleCount"
+      ]
+    },
+    "NVIDIA-ConfigControl": {
+      "type": "object",
+      "properties": {
+        "enable": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

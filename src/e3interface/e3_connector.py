@@ -131,18 +131,24 @@ class ZMQConnector(E3Connector):
                 if (setup_socket.poll(request_timeout) & zmq.POLLIN) != 0:
                     reply = setup_socket.recv()
                     e3_logger.debug('ZMQ setup socket replied')
-                    setup_socket.close()
                     return reply
+
+                e3_logger.error(f"ZMQ setup did not reply within {request_timeout}ms")
+
             except KeyboardInterrupt:
-                e3_logger.debug("Keyboard interrupt, closing E3 Setup Socket")
-                setup_socket.setsockopt(zmq.LINGER, 0)
-                setup_socket.close()
+                e3_logger.debug("Keyboard interrupt while sending setup request")
                 raise
-            
+            except zmq.ZMQError:
+                e3_logger.exception("ZMQ error during setup request")
+                # fall through to retry
+            finally:
+                try:
+                    setup_socket.setsockopt(zmq.LINGER, 0)
+                    setup_socket.close()
+                except Exception:
+                    pass
+
             request_retries -= 1
-            e3_logger.error("ZMQ setup did not reply")
-            setup_socket.setsockopt(zmq.LINGER, 0)
-            setup_socket.close()
             e3_logger.debug('Retrying to connect')
         
         raise ConnectionRefusedError('E3 Setup request procedure did not went through')
@@ -155,8 +161,9 @@ class ZMQConnector(E3Connector):
         self.inbound_socket.setsockopt(zmq.CONFLATE, 1)  # Keep only last message
         self.inbound_socket.connect(self.inbound_endpoint)
 
-        self.poller = zmq.Poller()
-        self.poller.register(self.inbound_socket, zmq.POLLIN)
+        # Used only for test
+        # self.poller = zmq.Poller()
+        # self.poller.register(self.inbound_socket, zmq.POLLIN)
 
     def receive(self) -> bytes:
         # The commented part should be decommented for measuring the effective performance of the control loop

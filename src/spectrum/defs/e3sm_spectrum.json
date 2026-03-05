@@ -1,0 +1,137 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "_copyright": "Copyright (c) 2026, Andrea Lacava.  All rights reserved.",
+  "$defs": {
+    "Spectrum-RanFunctionData": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "contentEncoding": "base16",
+          "pattern": "^([0-9a-fA-F]{2})*$",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "description": {
+          "type": "string",
+          "contentEncoding": "base16",
+          "pattern": "^([0-9a-fA-F]{2})*$",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      },
+      "required": [
+        "name",
+        "version",
+        "description"
+      ]
+    },
+    "Spectrum-IQDataIndication": {
+      "type": "object",
+      "properties": {
+        "iqSamples": {
+          "type": "string",
+          "contentEncoding": "base16",
+          "pattern": "^([0-9a-fA-F]{2})*$",
+          "minLength": 1,
+          "maxLength": 16384
+        },
+        "sampleCount": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 32768
+        },
+        "timestamp": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2147483647
+        }
+      },
+      "required": [
+        "iqSamples",
+        "sampleCount"
+      ]
+    },
+    "Spectrum-PRBBlacklistControl": {
+      "type": "object",
+      "properties": {
+        "blacklistedPRBs": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 273,
+          "items": {
+            "type": "integer"
+          }
+        },
+        "samplingThreshold": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "validityPeriod": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3600
+        }
+      },
+      "required": [
+        "blacklistedPRBs"
+      ]
+    },
+    "Spectrum-PRBBlockedControl": {
+      "type": "object",
+      "properties": {
+        "blockedPRBs": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 273,
+          "items": {
+            "type": "integer"
+          }
+        }
+      },
+      "required": [
+        "blockedPRBs"
+      ]
+    },
+    "Spectrum-ConfigControl": {
+      "type": "object",
+      "properties": {
+        "noiseFloorThreshold": {
+          "type": "integer",
+          "minimum": -100,
+          "maximum": 100
+        },
+        "averagingFrames": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 255
+        },
+        "enable": {
+          "type": "boolean"
+        }
+      }
+    },
+    "Spectrum-PRBBlacklistReport": {
+      "type": "object",
+      "properties": {
+        "blacklistedPRBs": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 273,
+          "items": {
+            "type": "integer"
+          }
+        }
+      },
+      "required": [
+        "blacklistedPRBs"
+      ]
+    }
+  }
+}

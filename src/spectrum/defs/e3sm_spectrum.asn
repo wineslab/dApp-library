@@ -4,9 +4,20 @@
 -- Usage with E3 Protocol:
 -- - Spectrum-IndicationData structures are encoded into the protocolData field of E3-IndicationMessage
 -- - Spectrum-ControlData structures are encoded into the actionData field of E3-ControlAction
--- - Use E3-PDU as the top-level message structure, not the removed Spectrum-PDU
+-- - Use E3-PDU as the top-level message structure
 
 SPECTRUM-SM DEFINITIONS AUTOMATIC TAGS ::= BEGIN
+
+-- ============================================================================
+-- SM SPECTRUM RAN FUNCTION DATA STRUCTURES  
+-- ============================================================================
+
+-- Spectrum RAN function data
+Spectrum-RanFunctionData ::= SEQUENCE {
+    name                    OCTET STRING (SIZE (1..32)),
+    version                 INTEGER (0..65535),
+    description             OCTET STRING (SIZE (1..128))
+}
 
 -- ============================================================================
 -- INDICATION MESSAGE STRUCTURES
@@ -14,9 +25,9 @@ SPECTRUM-SM DEFINITIONS AUTOMATIC TAGS ::= BEGIN
 
 -- Spectrum IQ Data Indication (raw I/Q samples from RAN)
 Spectrum-IQDataIndication ::= SEQUENCE {
-    iqSamples               OCTET STRING (SIZE (1..16384)),  -- Raw I/Q data as int16 array
-    sampleCount             INTEGER (0..32768),              -- Number of I/Q samples
-    timestamp               INTEGER (0..2147483647) OPTIONAL -- Unix timestamp when samples were captured
+    iqSamples               OCTET STRING (SIZE (1..16384)),                 -- Raw I/Q data as int16 array
+    sampleCount             INTEGER (0..32768),                             -- Number of I/Q samples
+    timestamp               INTEGER (0..2147483647) OPTIONAL                -- Unix timestamp when samples were captured
 }
 
 -- ============================================================================
@@ -41,9 +52,9 @@ Spectrum-PRBBlockedControl ::= SEQUENCE {
 
 -- Spectrum Configuration Control
 Spectrum-ConfigControl ::= SEQUENCE {
-    noiseFloorThreshold     INTEGER (-100..100) OPTIONAL,    -- Update noise floor threshold
-    averagingFrames         INTEGER (1..255) OPTIONAL,       -- Update averaging window
-    enable                  BOOLEAN OPTIONAL                 -- Enable/disable spectrum monitoring
+    noiseFloorThreshold     INTEGER (-100..100) OPTIONAL,                   -- Update noise floor threshold
+    averagingFrames         INTEGER (1..255) OPTIONAL,                      -- Update averaging window
+    enable                  BOOLEAN OPTIONAL                                -- Enable/disable spectrum monitoring
 }
 
 -- ============================================================================

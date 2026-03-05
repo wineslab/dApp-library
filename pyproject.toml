@@ -8,20 +8,22 @@ name = "dapps"
 dynamic = [ "version" ]
 description = "A library for creating and connecting dApps to Open RAN units."
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 keywords = [ "dApps", "O-RAN", "5G", "cellular", "networks" ]
 classifiers = [
 "Development Status :: 4 - Beta",
 "Programming Language :: Python",
-"Programming Language :: Python :: 3.8",
-"Programming Language :: Python :: 3.9",
 "Programming Language :: Python :: 3.10",
 "Programming Language :: Python :: 3.11",
 "Programming Language :: Python :: 3.12",
 "Programming Language :: Python :: Implementation :: CPython",
 "Programming Language :: Python :: Implementation :: PyPy"
 ]
-dependencies = [ "asn1tools", "typing_extensions", "numpy", "pyzmq", "sigmf" ]
+license = "Apache-2.0"
+license-files = [
+    "LICENSE",
+]
+dependencies = [ "asn1tools", "typing_extensions", "numpy", "pyzmq", "sigmf", "jsonschema>=4.18.0" ]
 
 
 [[project.authors]]
@@ -61,6 +63,8 @@ packages = [
 "src/dapp",
 "src/e3interface",
 "src/spectrum",
+"src/nvidia",
+"src/simple",
 "src/iq_saver",
 "src/visualization"
 ]

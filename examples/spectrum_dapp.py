@@ -66,18 +66,34 @@ def main(args):
 
     dapp = SpectrumSharingDApp(noise_floor_threshold=noise_floor_threshold, save_iqs=args.save_iqs, control=args.control, link=args.link, transport=args.transport,
                 energyGui=args.energy_gui, iqPlotterGui=args.iq_plotter_gui, dashboard=args.demo_gui, classifier=classifier, center_freq=args.center_freq,
-                num_prbs=args.num_prbs, e_sampling=args.e, num_subcarrier_spacing=args.num_subcarrier_spacing, sampling_threshold=args.sampling_threshold)
+                num_prbs=args.num_prbs, e_sampling=args.e, num_subcarrier_spacing=args.num_subcarrier_spacing, sampling_threshold=args.sampling_threshold,
+                dapp_name="SpectrumSharing", dapp_version="1.0.0", vendor="WinesLab")
 
-    response, ranFunctionList = dapp.setup_connection()   
-    
+    response, setup_response = dapp.setup_connection()   
+
     if not response:
         raise ValueError("[WARNING] RAN refused Setup")
-    
-    print(f"[INFO] Setup Complete - RAN function available: {ranFunctionList}")
+
+    ran_functions = setup_response["ranFunctionList"]
+    print(f"[INFO] Setup Complete - RAN function available: {ran_functions}")
+
+    for ran_function in ran_functions:
+        if dapp.check_sm_ids(
+            ran_function["ranFunctionIdentifier"],
+            ran_function["telemetryIdentifierList"],
+            ran_function["controlIdentifierList"],
+        ):
+            # Attempt to decode ranFunctionData if present
+            rfd = ran_function.get("ranFunctionData")
+            if rfd:
+                decoded = dapp.decode_ran_function_data(rfd)
+                print(
+                    f"[INFO] Decoded ranFunctionData for RAN function {ran_function['ranFunctionIdentifier']}: {decoded}"
+                )
     time.sleep(1)
-    # atm we subscribe to all
-    dapp.send_subscription_request(ranFunctionList)
-    
+
+    dapp.send_subscription_request()
+
     if args.timed:
         timer = threading.Thread(target=stop_program, args=(args.timed, dapp), daemon=False)
         timer.start()

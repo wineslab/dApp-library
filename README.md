@@ -38,8 +38,8 @@ This dApp implements a spectrum sharing use case discussed in [our paper](https:
 - `--transport` - Specify the transport layer to be used. Options: `ipc`, `tcp` (default: `ipc`)
 
 **Data Collection and Control:**
-- `--save-iqs` - Enable data collection mode. When set, I/Q samples will be saved to disk for later analysis
-- `--control` - Enable PRB control. When set, the dApp will actively control spectrum allocation based on detected interference
+- `--save-iqs` - Enable data collection mode. When set, I/Q samples will be saved to disk for later analysis using SigMF
+- `--control` - Enable PRB control. When set, the dApp will actively control spectrum allocation based on detected interference. If not set, the dApp can still receive and implement control action from an external xApp
 
 **Spectrum Sensing Configuration:**
 - `--noise-floor-threshold` - Set the noise floor threshold (in dB) for determining the presence of incumbents and for detecting the PRBs affected. If not specified, will be auto-detected based on environment
