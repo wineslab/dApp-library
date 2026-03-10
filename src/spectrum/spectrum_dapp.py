@@ -100,6 +100,7 @@ class SpectrumSharingDApp(DApp):
                 hw_info=f"FFT:{self.fft_size}, PRBs:{self.num_prbs}, E-sampling:{e_sampling}",
                 description=f"5G NR Uplink capture from SpectrumSharing dApp - RAN Function {self.RAN_FUNCTION_ID}",
                 fft_size=self.fft_size,
+                dtype="ci16_le",
                 num_prbs=self.num_prbs,
                 subcarrier_spacing_khz=self.num_subcarrier_spacing,
                 sampling_threshold=self.sampling_threshold
@@ -379,7 +380,7 @@ class SpectrumSharingDApp(DApp):
         with self._sample_idx_lock:
             self.sample_idx = None
             if self.save_iqs:
-                self.sample_idx = self.iq_saver.save_samples(iq_comp.astype(np.complex64), timestamp=timestamp)
+                self.sample_idx = self.iq_saver.save_samples(iq_arr, timestamp=timestamp)
 
         abs_iq = np.abs(iq_comp).astype(float)
         dapp_logger.debug(f"After iq division self.abs_iq_av: {self.abs_iq_av.shape} abs_iq: {abs_iq.shape}")
