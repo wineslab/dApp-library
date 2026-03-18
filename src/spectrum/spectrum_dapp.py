@@ -103,7 +103,9 @@ class SpectrumSharingDApp(DApp):
                 dtype="ci16_le",
                 num_prbs=self.num_prbs,
                 subcarrier_spacing_khz=self.num_subcarrier_spacing,
-                sampling_threshold=self.sampling_threshold
+                sampling_threshold=self.sampling_threshold,
+                max_samples_per_file=2000,
+                average_over_frames=self.average_over_frames
             )
         self.control = control
         dapp_logger.info(f"Control is {'not ' if not self.control else ''}active")
@@ -343,8 +345,13 @@ class SpectrumSharingDApp(DApp):
         # Add annotation to IQ recording
         if self.save_iqs and self.sample_idx is not None:
             dapp_logger.info(f"Add annotation")
+            # Compensate for the averaging delay: the interference was
+            # detected over the last average_over_frames indications,
+            # so the true onset is ~average_over_frames frames back.
+            annotation_sample_idx = max(0, self.sample_idx - (self.average_over_frames * self.fft_size))
+    
             self.iq_saver.add_annotation(
-                        start_sample=self.sample_idx,
+                        start_sample=annotation_sample_idx,
                         label="prb_control",
                         comment=f"Blacklisted {len(prb_blk_list)} PRBs upon message from xApp",
                         timestamp=time.time(), # Since this is a control coming from the xApp it makes sense to save when it has been elapsed
@@ -481,8 +488,13 @@ class SpectrumSharingDApp(DApp):
                 with self._sample_idx_lock:
                     if self.save_iqs and self.sample_idx is not None:
                         dapp_logger.info(f"Add annotation")
+                        # Compensate for the averaging delay: the interference was
+                        # detected over the last average_over_frames indications,
+                        # so the true onset is ~average_over_frames frames back.
+                        annotation_sample_idx = max(0, self.sample_idx - (self.average_over_frames * self.fft_size))
+
                         self.iq_saver.add_annotation(
-                                    start_sample=self.sample_idx,
+                                    start_sample=annotation_sample_idx,
                                     label="prb_control",
                                     timestamp=timestamp,
                                     comment=f"Blacklisted {prb_blk_list.size} PRBs due to interference",

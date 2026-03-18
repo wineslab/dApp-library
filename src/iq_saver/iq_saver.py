@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-IQSaver - SigMF-compliant IQ sample recorder with time-based file rotation
+IQSaver - SigMF-compliant IQ sample recorder with sample-count-based file rotation
 and deferred annotation support for the SPEAR dApp project.
 """
 import time
@@ -17,7 +17,7 @@ class IQSaver:
     """
     SigMF-compliant IQ sample recorder 
     Features:
-    - Single-file recording
+    - Sample-count-based file rotation (configurable max samples per file)
     - Timestamp-indexed annotation (can be added post-capture)
         - Per-annotation wall-clock timestamps stored as `spear:timestamp` and exported
             to the SigMF `core:datetime` field when written
@@ -38,6 +38,7 @@ class IQSaver:
                  hw_info: str = "",
                  dtype: str = "ci16_le",
                  filename: str = None,
+                 max_samples_per_file: Optional[int] = None,
                  **metadata_kwargs):
         """
         Initialize IQSaver with SigMF-compliant recording configuration.
@@ -53,6 +54,8 @@ class IQSaver:
             hw_info: Hardware/RU information (e.g., "USRP B210", "RU config")
             dtype: SigMF data type (default: ci16_le for complex int16 little-endian)
             filename: Custom filename (without extension). If None, timestamp-based name is used
+            max_samples_per_file: Maximum number of frames (save_samples calls) per file
+                before rotating to a new file. None disables rotation (single file).
             **metadata_kwargs: Additional global metadata fields (stored under spear: namespace)
         """
         self.base_path = Path(base_path) if base_path else Path.cwd()
@@ -78,7 +81,7 @@ class IQSaver:
         self._data_path: Optional[str] = None
         
         # Counters
-        self._sample_count: int = 0      # saved frame count (for flush threshold)
+        self._sample_count: int = 0      # saved frame count (for rotation threshold)
         self._iq_sample_count: int = 0   # actual IQ samples written (for sample_start)
         self._is_initialized: bool = False
         
@@ -89,6 +92,15 @@ class IQSaver:
         # Session metadata
         self._session_start_time = time.time()
         self._custom_filename = filename
+
+        # File rotation config
+        self.max_samples_per_file = max_samples_per_file
+        if max_samples_per_file is not None and max_samples_per_file <= 0:
+            raise ValueError("max_samples_per_file must be positive.")
+        
+        self._session_timestamp_ms: Optional[int] = None
+        self._file_index: int = 0
+        self._all_files: List[str] = []
         
     def _initialize_file(self, timestamp: Optional[float] = None) -> None:
         """
@@ -105,10 +117,11 @@ class IQSaver:
             timestamp = time.time()
         
         if self._custom_filename:
-            base_filename = self._custom_filename
+            base_filename = f"{self._custom_filename}_{self._file_index:04d}"
         else:
-            timestamp_ms = int(timestamp * 1000)
-            base_filename = f"spectrum_iq_{timestamp_ms}"
+            if self._file_index == 0:
+                self._session_timestamp_ms = int(timestamp * 1000)
+            base_filename = f"spectrum_iq_{self._session_timestamp_ms}_{self._file_index:04d}"
         
         self._filename = base_filename
         
@@ -161,7 +174,29 @@ class IQSaver:
         self._sigmf.tofile(str(self.base_path / base_filename))
         
         self._is_initialized = True
-        
+    
+    def _rotate_file(self, timestamp: float) -> None:
+        """Close current file and start a new one for sample-count-based rotation."""
+        # Finalize current recording
+        self._flush_annotations()
+        if self._file_handle is not None:
+            self._file_handle.close()
+            self._file_handle = None
+        if self._sigmf is not None and self._filename is not None:
+            self._sigmf.tofile(str(self.base_path / self._filename))
+            self._all_files.append(self._filename)
+
+        # Reset all state for new file
+        self._sigmf = None
+        self._filename = None
+        self._data_path = None
+        self._sample_count = 0
+        self._iq_sample_count = 0
+        self._is_initialized = False
+        self._annotation_buffer.clear()
+        self._annotation_count = 0
+        self._file_index += 1
+
     def _finalize_file(self) -> None:
         """Finalize the recording file and write metadata."""
         if self._file_handle is not None:
@@ -197,7 +232,11 @@ class IQSaver:
         if timestamp is None:
             timestamp = time.time()
         
-        # Initialize file on first write
+        # Check rotation condition (frame count threshold)
+        if self.max_samples_per_file is not None and self._sample_count >= self.max_samples_per_file:
+            self._rotate_file(timestamp)
+        
+        # Initialize file on first write or after rotation
         if not self._is_initialized:
             self._initialize_file(timestamp)
         
@@ -230,7 +269,7 @@ class IQSaver:
         
         # Update counters:
         # - return the true IQ sample offset (before this write)
-        # - increment frame counter (used for annotation flush threshold)
+        # - increment frame counter (used for rotation threshold)
         # - increment IQ sample counter by number of samples written
         sample_index = self._iq_sample_count
         self._sample_count += 1
@@ -403,6 +442,8 @@ class IQSaver:
         
         # Finalize file
         self._finalize_file()
+        if self._filename:
+            self._all_files.append(self._filename)
     
     def __enter__(self):
         """Context manager entry."""

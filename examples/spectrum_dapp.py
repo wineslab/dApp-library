@@ -125,7 +125,7 @@ if __name__ == "__main__":
     parser.add_argument('--demo-gui', action='store_true', default=False, help="Set whether to enable the Demo GUI")
     parser.add_argument('--num-prbs', type=int, default=106, help="Number of PRBs")
     parser.add_argument('--num-subcarrier-spacing', type=int, default=30, help="Subcarrier spacing in kHz (FR1 is 30)")
-    parser.add_argument('--e', action='store_true', default=False, help="Set if 3/4 sampling for FFT size is set on the gNB (-E option on OAI)")
+    parser.add_argument('-e', '--e', action='store_true', default=False, help="Set if 3/4 sampling for FFT size is set on the gNB (-E option on OAI)")
     parser.add_argument('--center-freq', type=float, default=3.6192e9, help="Center frequency in Hz")
     parser.add_argument('--timed', type=int, default=0, metavar='SECONDS', help="Run with a time limit (in seconds). 0 means no limit.")
     parser.add_argument('--model', type=str, default='', help="Path to the CNN model file to be used")
