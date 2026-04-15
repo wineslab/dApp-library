@@ -34,43 +34,52 @@ This dApp implements a spectrum sharing use case discussed in [our paper](https:
 **Command-line arguments:**
 
 **Connection Configuration:**
+
 - `--link` - Specify the link layer to be used. Options: `zmq`, `posix` (default: `zmq`)
 - `--transport` - Specify the transport layer to be used. Options: `ipc`, `tcp` (default: `ipc`)
 
 **Data Collection and Control:**
+
 - `--save-iqs` - Enable data collection mode. When set, I/Q samples will be saved to disk for later analysis using SigMF
 - `--control` - Enable PRB control. When set, the dApp will actively control spectrum allocation based on detected interference. If not set, the dApp can still receive and implement control action from an external xApp
 
 **Spectrum Sensing Configuration:**
+
 - `--noise-floor-threshold` - Set the noise floor threshold (in dB) for determining the presence of incumbents and for detecting the PRBs affected. If not specified, will be auto-detected based on environment
 - `--ota` - Specify if the setup is Over-The-Air (OTA) or on Colosseum testbed for using a precalculated noise floor threshold. If `--noise-floor-threshold` is specified, this parameter is ignored
 
 **Visualization Options:**
+
 - `--energy-gui` - Enable the energy spectrum visualization GUI
 - `--iq-plotter-gui` - Enable the I/Q constellation plotter GUI
 - `--demo-gui` - Enable the demonstration GUI showing real-time spectrum occupancy
 
 **Radio Configuration:**
+
 - `--num-prbs` - Number of Physical Resource Blocks in the channel (default: 106)
 - `--num-subcarrier-spacing` - Subcarrier spacing in kHz. Use 30 for FR1 (sub-6 GHz) (default: 30)
 - `--e` - Enable 3/4 FFT sampling mode. Set this flag if the gNB was started with the `-E` option
 - `--center-freq` - Center frequency in Hz (default: 3.6192e9, which is 3.6192 GHz)
 
 **Execution Control:**
+
 - `--timed SECONDS` - Run the dApp with a time limit (in seconds). Set to 0 for no limit (default: 0)
 
 **AI/ML Model Configuration:**
+
 - `--model` - Path to a pre-trained CNN model file for spectrum classification. If not provided, uses rule-based detection
 - `--time-window` - Number of consecutive spectrum vectors to use as input for the CNN model (default: 5)
 
 **Signal Processing Parameters:**
+
 - `--moving-avg-window` - Window size (in samples) for the moving average filter used to smooth energy measurements and detect peaks in the spectrum (default: 30)
 - `--extraction-window` - Number of samples to retain after detecting an energy peak for further analysis (default: 600)
 - `--sampling-threshold` - Down-sampling ratio applied to IQ sensing. An IQ vector will be delivered every Nth sensing (default: 5)
 
 **Adaptive Noise Floor Parameters:**
+
 - `--use-adaptive-noise-floor` - Enable adaptive noise floor thresholding using a per-bin median magnitude computed over a rolling history buffer, instead of a fixed noise floor threshold (default: False)
-- `--adaptive-hist-depth` - Number of IQ observation frames to retain in the adaptive noise floor circular buffer. A noise floor estimate will not be produced until this many frames have been collected (default: 32)
+- `--average_over_frames - Number of IQ observation frames to retain in the adaptive noise floor circular buffer. A noise floor estimate will not be produced until this many frames have been collected (default: 32)
 - `--noise-floor-threshold` - When using adaptive noise floor, the minimum SNR in dB that a bin must exceed to be considered a detection. When not using adaptive noise floor, the fixed magnitude threshold in dB above which a bin is considered active (default: 53)
 - `--embargo-timeout-secs` - Minimum time in seconds a PRB remains blocked after its last detection, regardless of the current SNR. Should be set to 1-2x the longest expected detection period to handle infrequent waveforms (default: 9.9)
 
