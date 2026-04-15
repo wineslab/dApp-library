@@ -14,7 +14,7 @@ import time
 import os
 import json
 
-# from typing import override
+from typing import override
 
 import asn1tools
 import jsonschema
@@ -67,7 +67,7 @@ class SimpleDApp(DApp):
 
     # ---- E3AP callbacks -------------------------------------------------- #
 
-    # @override
+    @override
     def _handle_indication(self, dapp_identifier, data: bytes):
         """Process a raw indication payload from the TEST service model.
 
@@ -109,7 +109,7 @@ class SimpleDApp(DApp):
             )
             return
 
-    # @override
+    @override
     def _handle_xapp_control(self, dapp_identifier: int, data: bytes):
         try:
 
@@ -177,7 +177,7 @@ class SimpleDApp(DApp):
         else:
             raise ValueError(f"Unsupported encoding method: {self.encoding_method}")
 
-    # @override
+    @override
     def _decode_ran_function_data(self, data_bytes: bytes) -> dict | None:
         """Decode the SM Simple `ranFunctionData` attached to a SetupResponse entry.
 
@@ -227,12 +227,12 @@ class SimpleDApp(DApp):
 
     # ---- DApp lifecycle -------------------------------------------------- #
 
-    # @override
+    @override
     def _control_loop(self):
         """Main loop body — just sleeps; work happens in the indication callback."""
         time.sleep(1)
 
-    # @override
+    @override
     def _stop(self):
         dapp_logger.info(
             f"SimpleDApp stopping. Total indications received: {self.indication_count}"

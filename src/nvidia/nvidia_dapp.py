@@ -12,6 +12,7 @@ import asn1tools
 import jsonschema
 # np.set_printoptions(threshold=sys.maxsize)
 
+from typing import override
 from dapp.dapp import DApp
 from e3interface.e3_logging import dapp_logger
 
@@ -56,9 +57,10 @@ class NvidiaDApp(DApp):
         dapp_logger.debug(f'Triggered callback for dApp {dapp_identifier}')
         indication_message = data
         
-        dapp_logger.debug(f"Received indication message")
+        dapp_logger.debug("Received indication message")
         dapp_logger.debug(indication_message)
 
+    @override
     def _control_loop(self):
         # Just sleep to avoid busy-waiting
         try:
@@ -66,6 +68,7 @@ class NvidiaDApp(DApp):
         except Exception:
             dapp_logger.exception("[NVIDIA] Error in the control loop")
 
+    @override
     def _stop(self):        
         # Nothing to do here atm
         pass

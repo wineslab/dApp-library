@@ -15,8 +15,9 @@ import numpy as np
 
 class Dashboard:
     # The default values of the dashboard are based on the default configuration
-    def __init__(self, buffer_size: int = 100, ofdm_symbol_size: int = 1272, bw: float = 38.16e6, center_freq: float = 3.6192e9, 
-                 num_prbs: int = 106, first_carrier_offset: int = 900, classifier = None):
+    def __init__(self, buffer_size: int = 100, ofdm_symbol_size: int = 1272, bw: float = 38.16e6, center_freq: float = 3.6192e9,
+                 num_prbs: int = 106, first_carrier_offset: int = 900, prb_protected_below: int = 75,
+                 classifier=None, adaptiveThreshold=False, control: bool = False):
         # Flask app setup
         self.app = Flask(__name__)
         self.app.config['TEMPLATES_AUTO_RELOAD'] = True
@@ -29,11 +30,16 @@ class Dashboard:
         self.center_freq = center_freq
         self.num_prbs = num_prbs
         self.first_carrier_offset = first_carrier_offset
-        
+        # PRBs 0..prb_protected_below-1 are reserved (BWP/PRACH) and never blacklisted.
+        # PRBs prb_protected_below..num_prbs-1 are the eligible spectrum-sharing region.
+        self.prb_protected_below = prb_protected_below
+        self.control = control
+
         # Route setup
         self.app.add_url_rule("/", view_func=self.index)
 
         self.classifier = classifier if classifier is not None else None
+        self.adaptiveThreshold = adaptiveThreshold
 
         # SocketIO event handlers
         self.socketio.on_event("connect", self.handle_initial_connection)
@@ -60,7 +66,16 @@ class Dashboard:
             "bw": self.bw,
             "num_prbs": self.num_prbs,
             "first_carrier_offset": self.first_carrier_offset,
-            "predicted_label": self.classifier is not None
+            # PRB zone boundaries so the frontend can draw visual separators:
+            # [0, prb_protected_below)   → protected (BWP/PRACH, never blacklisted)
+            # [prb_protected_below, num_prbs) → eligible for spectrum-sharing blacklist
+            # [num_prbs, ...)             → guard band (never blacklisted)
+            # show_prb_zones is only meaningful when control is active (blocking PRBs);
+            # without control there is nothing being blocked so zones would be misleading.
+            "show_prb_zones": self.control,
+            "prb_protected_below": self.prb_protected_below if self.control else None,
+            "predicted_label": self.classifier is not None,
+            "adaptive_noise_floor": self.adaptiveThreshold,
         }
         self.socketio.emit("initialize_plot", data_buffer)
 
@@ -69,7 +84,8 @@ class Dashboard:
         imag_part = iq_data[1::2]  # Odd indices: imaginary part
 
         iq_complex = real_part + 1j * imag_part
-        magnitude_dB = 20 * np.log10(np.where(np.abs(iq_complex) == 0, 1, np.abs(iq_complex)))
+        abs_iq = np.abs(iq_complex)
+        magnitude_dB = 20 * np.log10(np.where(abs_iq == 0, 1, abs_iq))
 
         return magnitude_dB
 
@@ -94,6 +110,10 @@ class Dashboard:
         elif plot == "prb_list":
             prb_list = payload.tolist()
             self.socketio.emit("update_plot", {"prb_list": prb_list})
+
+        elif self.adaptiveThreshold == True and plot == "adaptive_noise_floor":
+            adaptive_noise_floor = payload.tolist()
+            self.socketio.emit("update_plot", {"adaptive_noise_floor": adaptive_noise_floor})
 
     def stop(self):
         """Stops the server and kills the thread."""

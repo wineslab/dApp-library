@@ -12,6 +12,7 @@
     <div id="prbs"></div>
     <div id="magnitude"></div>
     <div id="predicted_label"></div>
+    <div id="adaptive_noise_floor"></div>
 
     <script>
         var waterfall = [{
@@ -187,7 +188,34 @@
             },
             xaxis: { visible: false },
             yaxis: { visible: false }
-        };      
+        };
+
+        var adaptiveNoiseFloorData = [{
+            x: [],
+            y: [],
+            mode: 'lines',
+            type: 'scattergl'
+        }];
+
+        var adaptiveNoiseFloorLayout = {
+            title: {
+                text: "Adaptive Noise Floor",
+                font: {size: 24}
+            },
+            xaxis: {
+                title: {
+                    text: "FFT Bin"
+                }
+                // range set dynamically from ofdm_symbol_size on initialize_plot
+            },
+            yaxis: {
+                title: {
+                    text: "Noise Floor"
+                },
+                autorange: "max",
+                rangemode: "tozero"
+            }
+        };
 
         var waterfall_buffer;
         var prbs_buffer;
@@ -231,8 +259,59 @@
             prbs[0].z = prbs_buffer;
             Plotly.newPlot('magnitude', waterfall, waterfallLayout);
             Plotly.newPlot('prbs', prbs, prbsLayout);
+
+            // PRB zone overlays — only drawn when control is active (PRB blocking enabled).
+            // Without control there are no blocked PRBs so zone markers would be misleading.
+            if (data.show_prb_zones) {
+                var prb_protected_below = data.prb_protected_below;
+                var num_prbs = data.num_prbs;
+                Plotly.relayout('prbs', {
+                    shapes: [
+                        // Protected zone: PRBs 0..prb_protected_below-1 (BWP/PRACH, never blacklisted)
+                        {
+                            type: 'rect',
+                            x0: -0.5, x1: prb_protected_below - 0.5,
+                            y0: -0.5, y1: 0.5,
+                            fillcolor: 'rgba(180,180,180,0.45)',
+                            line: { width: 1, color: '#999' }
+                        },
+                        // Guard band boundary: dashed line after the last eligible PRB
+                        {
+                            type: 'line',
+                            x0: num_prbs - 0.5, x1: num_prbs - 0.5,
+                            y0: -0.5, y1: 0.5,
+                            line: { width: 2, color: '#666', dash: 'dash' }
+                        }
+                    ],
+                    annotations: prbsLayout.annotations.concat([
+                        {
+                            x: prb_protected_below / 2, y: 1.15,
+                            xref: 'x', yref: 'paper',
+                            text: 'BWP/PRACH protected',
+                            showarrow: false,
+                            font: { size: 10, color: '#666' }
+                        },
+                        {
+                            x: (prb_protected_below + num_prbs) / 2, y: 1.15,
+                            xref: 'x', yref: 'paper',
+                            text: 'Spectrum sharing eligible',
+                            showarrow: false,
+                            font: { size: 10, color: '#333' }
+                        }
+                    ])
+                });
+            }
+
             if(data.predicted_label){
                 Plotly.newPlot("predicted_label", [], classifierLayout);
+            }
+
+            if(data.adaptive_noise_floor)
+            {
+                Plotly.newPlot("adaptive_noise_floor", adaptiveNoiseFloorData, adaptiveNoiseFloorLayout);
+                Plotly.relayout("adaptive_noise_floor", {
+                    'xaxis.range': [0, ofdm_symbol_size - 1]
+                });
             }
 
             // Dynamic preprocessing based on first_carrier_offset    
@@ -297,6 +376,11 @@
                 Plotly.relayout('predicted_label', {
                     'title.text': `RFI Predicted: ${data.predicted_label}`
                 });
+            } else if ('adaptive_noise_floor' in data) {
+                var anf = data.adaptive_noise_floor;
+                // console.log("ANF is: ", anf);
+                var bins = anf.map((_, i) => i);
+                Plotly.restyle('adaptive_noise_floor', { x: [bins], y: [anf] });
             } else {
                 console.error('Error unknown values in data ', data);
             }

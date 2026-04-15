@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Example script to showcase the Spectrum Sharing dApp 
+Example script to showcase the Spectrum Sharing dApp
 """
 
 import argparse
@@ -9,7 +9,8 @@ import time
 import logging
 
 from e3interface.e3_connector import E3LinkLayer, E3TransportLayer
-from spectrum.spectrum_dapp import SpectrumSharingDApp
+from spectrum.spectrum_dapp import SpectrumSharingDApp, compute_fft_size
+from spectrum.threshold_detector import StaticThresholdDetector, AdaptiveThresholdDetector
 
 LOG_DIR = '/tmp/'
 
@@ -21,9 +22,6 @@ def stop_program(time_to_wait, dapp: SpectrumSharingDApp):
     print("[INFO] Stopping of the dApp completed")
 
 def main(args):
-    # with open(f"{LOG_DIR}/busy.txt", "w") as f:
-    #     f.close()
-
     if args.model:
         try:
             from libiq.classifier.cnn import Classifier
@@ -37,39 +35,83 @@ def main(args):
             )
             exit(-1)
 
-    # This value really depends on the RF conditions and the RU used and should be carefully calibrated
+    # This value really depends on the RF conditions and the RU used and
+    # should be carefully calibrated.
     if args.noise_floor_threshold:
-        print(f'Using custom configuration')
+        print('Using custom configuration')
         noise_floor_threshold = args.noise_floor_threshold
-    else:    
+    else:
         if args.ota:
-            print(f'Using OTA configuration')
-            noise_floor_threshold = 20 
-        else: # Colosseum
-            print(f'Using Colosseum configuration')
+            print('Using OTA configuration')
+            noise_floor_threshold = 20
+        else:  # Colosseum
+            print('Using Colosseum configuration')
             noise_floor_threshold = 53
 
     print(f'Threshold is {noise_floor_threshold}')
 
-    classifier = None
-    if args.model:
-        import math
-        ofdm_symbol_size = args.num_prbs * 12  # 12 subcarriers per PRB always fixed by LTE/NR standard
-        fft_size = 2 ** math.ceil(math.log2(ofdm_symbol_size))  # Next power of 2
-        classifier = Classifier(
-            time_window = args.time_window,
-            input_vector = fft_size,
-            moving_avg_window = args.moving_avg_window,
-            extraction_window = args.extraction_window,
-            model_path = args.model
+    # ------------------------------------------------------------------
+    # Build the detection strategy explicitly so the example is the
+    # authoritative place for detector configuration.
+    # ------------------------------------------------------------------
+    fft_size = compute_fft_size(args.num_prbs, args.e)
+
+    if args.use_adaptive_noise_floor:
+        detector = AdaptiveThresholdDetector(
+            snr_threshold_db=noise_floor_threshold,
+            fft_size=fft_size,
+            hist_depth=args.average_over_frames,
+            embargo_timeout_secs=args.embargo_timeout_secs,
+        )
+        print(
+            f"[INFO] Detector: AdaptiveThresholdDetector"
+            f" | SNR threshold: {noise_floor_threshold} dB"
+            f" | hist_depth: {args.average_over_frames}"
+            f" | embargo: {args.embargo_timeout_secs} s"
+        )
+    else:
+        detector = StaticThresholdDetector(
+            threshold_db=noise_floor_threshold,
+            fft_size=fft_size,
+            window=args.average_over_frames,
+        )
+        print(
+            f"[INFO] Detector: StaticThresholdDetector"
+            f" | threshold: {noise_floor_threshold} dB"
+            f" | window: {args.average_over_frames} frames"
         )
 
-    dapp = SpectrumSharingDApp(noise_floor_threshold=noise_floor_threshold, save_iqs=args.save_iqs, control=args.control, link=args.link, transport=args.transport,
-                energyGui=args.energy_gui, iqPlotterGui=args.iq_plotter_gui, dashboard=args.demo_gui, classifier=classifier, center_freq=args.center_freq,
-                num_prbs=args.num_prbs, e_sampling=args.e, num_subcarrier_spacing=args.num_subcarrier_spacing, sampling_threshold=args.sampling_threshold,
-                dapp_name="SpectrumSharing", dapp_version="1.0.0", vendor="WinesLab")
+    classifier = None
+    if args.model:
+        classifier = Classifier(
+            time_window=args.time_window,
+            input_vector=fft_size,
+            moving_avg_window=args.moving_avg_window,
+            extraction_window=args.extraction_window,
+            model_path=args.model,
+        )
 
-    response, setup_response = dapp.setup_connection()   
+    dapp = SpectrumSharingDApp(
+        detector=detector,
+        save_iqs=args.save_iqs,
+        control=args.control,
+        link=args.link,
+        transport=args.transport,
+        energyGui=args.energy_gui,
+        iqPlotterGui=args.iq_plotter_gui,
+        dashboard=args.demo_gui,
+        classifier=classifier,
+        center_freq=args.center_freq,
+        num_prbs=args.num_prbs,
+        e_sampling=args.e,
+        num_subcarrier_spacing=args.num_subcarrier_spacing,
+        sampling_threshold=args.sampling_threshold,
+        dapp_name="SpectrumSharing",
+        dapp_version="1.0.0",
+        vendor="WinesLab",
+    )
+
+    response, setup_response = dapp.setup_connection()
 
     if not response:
         raise ValueError("[WARNING] RAN refused Setup")
@@ -88,7 +130,8 @@ def main(args):
             if rfd:
                 decoded = dapp.decode_ran_function_data(rfd)
                 print(
-                    f"[INFO] Decoded ranFunctionData for RAN function {ran_function['ranFunctionIdentifier']}: {decoded}"
+                    f"[INFO] Decoded ranFunctionData for RAN function"
+                    f" {ran_function['ranFunctionIdentifier']}: {decoded}"
                 )
     time.sleep(1)
 
@@ -108,32 +151,58 @@ def main(args):
                 timer.join(timeout=2)
                 if timer.is_alive():
                     print("[ERROR] Timer thread did not terminate in time")
-    
-    logging.shutdown()
 
+    logging.shutdown()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Example of a dApp for Spectrum Sharing")
-    parser.add_argument('--link', type=str, default='zmq', choices=[layer.value for layer in E3LinkLayer], help="Specify the link layer to be used")
-    parser.add_argument('--transport', type=str, default='ipc', choices=[layer.value for layer in E3TransportLayer], help="Specify the transport layer to be used")
-    parser.add_argument('--save-iqs', action='store_true', default=False, help="Specify if this is data collection run or not. In the first case I/Q samples will be saved")
-    parser.add_argument('--control', action='store_true', default=False, help="Set whether to perform control of PRB")
-    parser.add_argument('--noise-floor-threshold', type=int, default=None, help="Set the noise floor threshold for determining the presence of incumbents and for detecting the PRBs affected.")
-    parser.add_argument('--ota', action='store_true', default=False, help="Specify if the setup used is OTA or on Colosseum for determining the noise floor threshold. If the `noise_floor_threshold` parameter is specified, this parameter is ignored")
-    parser.add_argument('--energy-gui', action='store_true', default=False, help="Set whether to enable the energy GUI")
-    parser.add_argument('--iq-plotter-gui', action='store_true', default=False, help="Set whether to enable the IQ Plotter GUI")
-    parser.add_argument('--demo-gui', action='store_true', default=False, help="Set whether to enable the Demo GUI")
-    parser.add_argument('--num-prbs', type=int, default=106, help="Number of PRBs")
-    parser.add_argument('--num-subcarrier-spacing', type=int, default=30, help="Subcarrier spacing in kHz (FR1 is 30)")
-    parser.add_argument('-e', '--e', action='store_true', default=False, help="Set if 3/4 sampling for FFT size is set on the gNB (-E option on OAI)")
-    parser.add_argument('--center-freq', type=float, default=3.6192e9, help="Center frequency in Hz")
-    parser.add_argument('--timed', type=int, default=0, metavar='SECONDS', help="Run with a time limit (in seconds). 0 means no limit.")
-    parser.add_argument('--model', type=str, default='', help="Path to the CNN model file to be used")
-    parser.add_argument('--time-window', type=int, default=5, help="Number of input vectors to pass to the CNN model.")
-    parser.add_argument('--moving-avg-window', type=int, default=30, help="Window size (in samples) for the moving average used to detect energy peaks in the spectrum.")
-    parser.add_argument('--extraction-window', type=int, default=600, help="Number of samples to retain after detecting an energy peak.")
-    parser.add_argument('--sampling-threshold', type=int, default=5, help="Sampling ratio for the IQ captures, one delivery each sampling threshold")
-
+    parser.add_argument('--link', type=str, default='zmq',
+                        choices=[layer.value for layer in E3LinkLayer],
+                        help="Link layer to use")
+    parser.add_argument('--transport', type=str, default='ipc',
+                        choices=[layer.value for layer in E3TransportLayer],
+                        help="Transport layer to use")
+    parser.add_argument('--save-iqs', action='store_true', default=False,
+                        help="Save I/Q samples to SigMF files")
+    parser.add_argument('--control', action='store_true', default=False,
+                        help="Send PRB blacklist control messages to the gNB")
+    parser.add_argument('--noise-floor-threshold', type=int, default=None,
+                        help="Detection threshold in dB (static) or dB above noise floor (adaptive)")
+    parser.add_argument('--use-adaptive-noise-floor', action='store_true', default=False,
+                        help="Use per-bin median noise floor estimation instead of a fixed threshold")
+    parser.add_argument('--embargo-timeout-secs', type=float, default=10.1,
+                        help="Hold time in seconds for embargoed PRBs after last detection (adaptive mode)")
+    parser.add_argument('--average-over-frames', type=int, default=64,
+                        help="Number of frames to average before each decision")
+    parser.add_argument('--ota', action='store_true', default=False,
+                        help="Use OTA threshold (20 dB) instead of Colosseum (53 dB). "
+                             "Ignored when --noise-floor-threshold is set.")
+    parser.add_argument('--energy-gui', action='store_true', default=False,
+                        help="Enable energy spectrum visualization")
+    parser.add_argument('--iq-plotter-gui', action='store_true', default=False,
+                        help="Enable IQ time-domain plotter")
+    parser.add_argument('--demo-gui', action='store_true', default=False,
+                        help="Enable dashboard visualization")
+    parser.add_argument('--num-prbs', type=int, default=106,
+                        help="Number of PRBs")
+    parser.add_argument('--num-subcarrier-spacing', type=int, default=30,
+                        help="Subcarrier spacing in kHz (FR1 = 30)")
+    parser.add_argument('--e', action='store_true', default=False,
+                        help="Enable 3/4 FFT sampling (OAI -E flag for USRPs)")
+    parser.add_argument('--center-freq', type=float, default=3.6192e9,
+                        help="RF center frequency in Hz")
+    parser.add_argument('--timed', type=int, default=0, metavar='SECONDS',
+                        help="Stop automatically after SECONDS (0 = run indefinitely)")
+    parser.add_argument('--model', type=str, default='',
+                        help="Path to CNN model file for signal classification")
+    parser.add_argument('--time-window', type=int, default=5,
+                        help="Input vector count for CNN model")
+    parser.add_argument('--moving-avg-window', type=int, default=30,
+                        help="Moving average window for CNN energy peak detection")
+    parser.add_argument('--extraction-window', type=int, default=600,
+                        help="Samples to retain after CNN energy peak detection")
+    parser.add_argument('--sampling-threshold', type=int, default=5,
+                        help="Deliver IQ every N sensing cycles (each cycle is 10 ms)")
 
     args = parser.parse_args()
     print("Start dApp")

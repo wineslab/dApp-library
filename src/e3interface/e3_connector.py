@@ -4,7 +4,7 @@ from enum import Enum
 import os
 import socket
 import zmq
-from .e3_logging import e3_logger, LOG_DIR
+from .e3_logging import e3_logger
 
 
 class E3LinkLayer(Enum):
@@ -94,12 +94,10 @@ class E3Connector(ABC):
         pass
       
 class ZMQConnector(E3Connector):
-    setup_context: zmq.Context
-    inbound_context: zmq.Context
-    outbound_context: zmq.Context
+    context: zmq.Context
 
     def __init__(self, transport_layer: E3TransportLayer):
-        self.setup_context = zmq.Context()
+        self.context = zmq.Context()
         
         match transport_layer:
             case E3TransportLayer.SCTP | E3TransportLayer.TCP:
@@ -123,7 +121,7 @@ class ZMQConnector(E3Connector):
         request_retries = 5
 
         while request_retries > 0:
-            setup_socket = self.setup_context.socket(zmq.REQ)
+            setup_socket = self.context.socket(zmq.REQ)
             setup_socket.connect(self.setup_endpoint)
             try:
                 e3_logger.debug("Send E3 Setup request")
@@ -155,8 +153,7 @@ class ZMQConnector(E3Connector):
         
 
     def setup_inbound_connection(self):
-        self.inbound_context = zmq.Context()
-        self.inbound_socket = self.inbound_context.socket(zmq.SUB)        
+        self.inbound_socket = self.context.socket(zmq.SUB)        
         self.inbound_socket.setsockopt_string(zmq.SUBSCRIBE, "") # subscribe to all the messages
         self.inbound_socket.setsockopt(zmq.CONFLATE, 1)  # Keep only last message
         self.inbound_socket.connect(self.inbound_endpoint)
@@ -180,20 +177,16 @@ class ZMQConnector(E3Connector):
         
 
     def setup_outbound_connection(self):
-        self.outbound_context = zmq.Context()
-        self.outbound_socket = self.outbound_context.socket(zmq.PUB)
+        self.outbound_socket = self.context.socket(zmq.PUB)
+        self.outbound_socket.setsockopt(zmq.CONFLATE, 1)  # Keep only last message in send queue; drops stale messages when HWM is reached
         self.outbound_socket.connect(self.outbound_endpoint)
     
     def send(self, payload: bytes):
         self.outbound_socket.send(payload)
 
     def dispose(self):
-        if hasattr(self, "setup_context"):    
-            self.setup_context.destroy()  
-        if hasattr(self, "inbound_context"):   
-            self.inbound_context.destroy()
-        if hasattr(self, "outbound_context"):   
-            self.outbound_context.destroy()
+        if hasattr(self, "context"):
+            self.context.destroy()
 
 class POSIXConnector(E3Connector):
     CHUNK_SIZE = 8192

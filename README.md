@@ -68,6 +68,12 @@ This dApp implements a spectrum sharing use case discussed in [our paper](https:
 - `--extraction-window` - Number of samples to retain after detecting an energy peak for further analysis (default: 600)
 - `--sampling-threshold` - Down-sampling ratio applied to IQ sensing. An IQ vector will be delivered every Nth sensing (default: 5)
 
+**Adaptive Noise Floor Parameters:**
+- `--use-adaptive-noise-floor` - Enable adaptive noise floor thresholding using a per-bin median magnitude computed over a rolling history buffer, instead of a fixed noise floor threshold (default: False)
+- `--adaptive-hist-depth` - Number of IQ observation frames to retain in the adaptive noise floor circular buffer. A noise floor estimate will not be produced until this many frames have been collected (default: 32)
+- `--noise-floor-threshold` - When using adaptive noise floor, the minimum SNR in dB that a bin must exceed to be considered a detection. When not using adaptive noise floor, the fixed magnitude threshold in dB above which a bin is considered active (default: 53)
+- `--embargo-timeout-secs` - Minimum time in seconds a PRB remains blocked after its last detection, regardless of the current SNR. Should be set to 1-2x the longest expected detection period to handle infrequent waveforms (default: 9.9)
+
 If you use the dApp concept and/or the framework to develop your own dApps, please cite the following paper:
 
 ```text
