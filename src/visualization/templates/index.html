@@ -11,7 +11,11 @@
 <body>
     <div id="prbs"></div>
     <div id="magnitude"></div>
-    <div id="predicted_label"></div>
+    <div style="display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 24px;">
+        <div id="predicted_label"></div>
+        <div id="ground_truth_label"></div>
+        <div id="sampling_threshold_control"></div>
+    </div>
     <div id="adaptive_noise_floor"></div>
 
     <script>
@@ -223,6 +227,15 @@
         var start_ignore;
         var end_ignore;
         var initialized = false;
+        var samplingThresholdInput;
+        var gtInput = null;
+        var gtBadge = null;
+        function updateBadge(label) { if (gtBadge) gtBadge.textContent = label; }
+        function flashBadge() {
+            if (!gtBadge) return;
+            gtBadge.style.outline = '3px solid #fbbc04';
+            setTimeout(function() { gtBadge.style.outline = 'none'; }, 400);
+        }
 
         var socket = io.connect('http://' + document.domain + ':' + location.port);
         socket.on('initialize_plot', function (data) {
@@ -259,6 +272,41 @@
             prbs[0].z = prbs_buffer;
             Plotly.newPlot('magnitude', waterfall, waterfallLayout);
             Plotly.newPlot('prbs', prbs, prbsLayout);
+
+            if (data.show_controls) {
+            var samplingThresholdContainer = document.getElementById('sampling_threshold_control');
+            samplingThresholdContainer.innerHTML = '';
+            samplingThresholdContainer.style.cssText = 'padding: 12px; font-family: sans-serif; display: flex; align-items: center; gap: 10px;';
+
+            var samplingThresholdLabel = document.createElement('label');
+            samplingThresholdLabel.textContent = 'Visualization sampling threshold:';
+            samplingThresholdLabel.style.cssText = 'font-size: 14px; font-weight: bold; white-space: nowrap;';
+            samplingThresholdContainer.appendChild(samplingThresholdLabel);
+
+            samplingThresholdInput = document.createElement('input');
+            samplingThresholdInput.type = 'number';
+            samplingThresholdInput.min = '1';
+            samplingThresholdInput.step = '1';
+            samplingThresholdInput.value = data.sampling_threshold;
+            samplingThresholdInput.style.cssText = 'font-size: 13px; padding: 5px 10px; border: 2px solid #ccc; border-radius: 4px; width: 100px; outline: none;';
+            samplingThresholdContainer.appendChild(samplingThresholdInput);
+
+            var samplingThresholdBtn = document.createElement('button');
+            samplingThresholdBtn.textContent = 'Set';
+            samplingThresholdBtn.style.cssText = 'padding: 5px 14px; font-size: 13px; background: #1a73e8; color: #fff; border: none; border-radius: 4px; cursor: pointer;';
+            samplingThresholdContainer.appendChild(samplingThresholdBtn);
+
+            function emitSamplingThreshold() {
+                var val = parseInt(samplingThresholdInput.value, 10);
+                if (!isNaN(val) && val >= 1) {
+                    socket.emit('set_sampling_threshold', val);
+                }
+            }
+            samplingThresholdBtn.addEventListener('click', emitSamplingThreshold);
+            samplingThresholdInput.addEventListener('keydown', function(e) {
+                if (e.key === 'Enter') emitSamplingThreshold();
+            });
+            } // end show_controls
 
             // PRB zone overlays — only drawn when control is active (PRB blocking enabled).
             // Without control there are no blocked PRBs so zone markers would be misleading.
@@ -314,6 +362,54 @@
                 });
             }
 
+            if (data.show_label_selector) {
+                var container = document.getElementById('ground_truth_label');
+                container.innerHTML = '';
+                container.style.cssText = 'padding: 12px; font-family: sans-serif; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;';
+
+                var heading = document.createElement('span');
+                heading.textContent = 'Ground Truth Label:';
+                heading.style.cssText = 'font-size: 14px; font-weight: bold; white-space: nowrap;';
+                container.appendChild(heading);
+
+                // Status badge
+                gtBadge = document.createElement('span');
+                gtBadge.style.cssText = 'font-size: 13px; font-weight: bold; padding: 4px 14px; border-radius: 12px; white-space: nowrap; transition: outline 0.1s; background: #5f6368; color: #fff;';
+                updateBadge(data.current_label);
+                container.appendChild(gtBadge);
+
+                // Free-text input for custom labels
+                gtInput = document.createElement('input');
+                gtInput.type = 'text';
+                gtInput.value = data.current_label;
+                gtInput.placeholder = 'custom label...';
+                gtInput.style.cssText = 'font-size: 13px; padding: 5px 10px; border: 2px solid #ccc; border-radius: 4px; width: 160px; outline: none;';
+                container.appendChild(gtInput);
+
+                var btn = document.createElement('button');
+                btn.textContent = 'Set';
+                btn.style.cssText = 'padding: 5px 14px; font-size: 13px; background: #1a73e8; color: #fff; border: none; border-radius: 4px; cursor: pointer;';
+                container.appendChild(btn);
+
+                var labelInitialized = false;
+                function emitLabel() {
+                    var val = gtInput.value.trim();
+                    if (val) {
+                        socket.emit('set_ground_truth_label', val);
+                        updateBadge(val);
+                        if (labelInitialized) flashBadge();
+                        labelInitialized = true;
+                    }
+                }
+
+                btn.addEventListener('click', emitLabel);
+                gtInput.addEventListener('keydown', function(e) {
+                    if (e.key === 'Enter') emitLabel();
+                });
+
+                emitLabel();
+            }
+
             // Dynamic preprocessing based on first_carrier_offset    
             // The carrier frequency is in the middle PRB (including DC leak on some radios)
             console.log("Initial values:", {
@@ -338,6 +434,26 @@
             });
 
             initialized = true;
+        });
+
+        socket.on('update_sampling_threshold', function (rate) {
+            samplingThresholdInput.value = rate;
+        });
+
+        socket.on('update_ground_truth_label', function (label) {
+            if (gtInput) gtInput.value = label;
+            updateBadge(label);
+            flashBadge();
+        });
+
+        socket.on('reset_waterfall', function () {
+            if (!initialized) return;
+            var rows = waterfall_buffer.length;
+            var cols = waterfall_buffer[0].length;
+            for (var i = 0; i < rows; i++) {
+                waterfall_buffer[i] = new Array(cols).fill(0);
+            }
+            Plotly.restyle('magnitude', { z: [waterfall_buffer] });
         });
 
         socket.on('update_plot', function (data) {

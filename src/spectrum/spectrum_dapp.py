@@ -163,6 +163,9 @@ class SpectrumSharingDApp(DApp):
         self.energyGui = kwargs.get('energyGui', False)
         self.iqPlotterGui = kwargs.get('iqPlotterGui', False)
         self.dashboard = kwargs.get('dashboard', False)
+        if self.save_iqs:
+            self._ground_truth_label = kwargs.get('ground_truth', "")
+            self._ground_truth_lock = threading.Lock()
 
         # Thread-safe sample_idx for IQ saver annotation cross-reference
         self._sample_idx_lock = threading.Lock()
@@ -195,6 +198,9 @@ class SpectrumSharingDApp(DApp):
                 classifier=classifier,
                 adaptiveThreshold=isinstance(self._detector, AdaptiveThresholdDetector),
                 control=self.control,
+                label_callback=self.set_ground_truth_label if self.save_iqs else None,
+                initial_label=self._ground_truth_label if self.save_iqs else "",
+                show_controls=kwargs.get('show_controls', False),
             )
 
     def _init_spectrum_encoder(self):
@@ -265,6 +271,13 @@ class SpectrumSharingDApp(DApp):
             raise ValueError("Callback must be callable")
         self._sampling_threshold_control_callback = callback
         dapp_logger.info(f"Custom control logic callback {'set' if callback else 'removed'}")
+
+    def set_ground_truth_label(self, label: str):
+        with self._ground_truth_lock:
+            self._ground_truth_label = label
+        dapp_logger.info(f"Ground truth label set to: {label!r}")
+        if self.dashboard:
+            self.demo.emit_label(label)
 
     def create_prb_blacklist_control(self, blacklisted_prbs: list[int],
                                      update_sampling: bool = False,
@@ -487,6 +500,9 @@ class SpectrumSharingDApp(DApp):
         dapp_logger.info(f"Sending Control to RAN: blockedPRBs={prb_blk_list}")
 
         if self.save_iqs:
+            if hasattr(self, '_ground_truth_label'):
+                with self._ground_truth_lock:
+                    ground_truth_label = self._ground_truth_label
             with self._sample_idx_lock:
                 if self.sample_idx is not None:
                     self.iq_saver.add_annotation(
@@ -498,6 +514,7 @@ class SpectrumSharingDApp(DApp):
                         noise_threshold=self._detector.threshold_db,
                         control_action="blacklist",
                         detector=type(self._detector).__name__,
+                        **({"ground_truth_label": ground_truth_label} if hasattr(self, '_ground_truth_label') else {}),
                     )
                     dapp_logger.info("Annotation added")
 
@@ -647,6 +664,10 @@ class SpectrumSharingDApp(DApp):
                 f"noise_floor_per_prb={ann.get('noise_floor_per_prb')} | "
                 f"snr_db_per_prb={ann.get('snr_db_per_prb')}"
             )
+            if hasattr(self, '_ground_truth_label'):
+                with self._ground_truth_lock:
+                    gt = self._ground_truth_label if detected_prbs.size > 0 else "no_rfi"
+                ann["ground_truth_label"] = gt
             with self._sample_idx_lock:
                 if self.sample_idx is not None:
                     self.iq_saver.add_annotation(start_sample=self.sample_idx, **ann)

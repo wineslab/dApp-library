@@ -10,10 +10,9 @@ from pathlib import Path
 import sys
 import os
 
-# Add parent directory to path for imports
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
-from spear.iq_saver.iq_saver import IQSaver
+from iq_saver.iq_saver import IQSaver
 import sigmf
 
 
@@ -394,6 +393,61 @@ def test_spectrum_dapp_integration_pattern():
         print("✓ Test 7 PASSED\n")
 
 
+def test_metadata_accumulation_across_flushes():
+    """Verify that repeated tofile calls accumulate all annotations, never losing earlier ones."""
+    print("=" * 80)
+    print("Test 8: Metadata accumulation across flushes")
+    print("=" * 80)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        saver = IQSaver(
+            base_path=tmpdir,
+            center_freq=3.6192e9,
+            bandwidth=38.16e6,
+            annotation_flush_interval=200,  # manual flush only
+            num_prbs=106
+        )
+
+        samples = (np.random.randn(1024) + 1j * np.random.randn(1024)) * 1000
+        saver.save_samples(samples.astype(np.complex64))
+
+        # First batch of annotations, flushed to disk
+        saver.add_annotation(label='batch_1_a', comment='first flush, annotation A')
+        saver.add_annotation(label='batch_1_b', comment='first flush, annotation B')
+        saver.finalize_annotations()
+
+        meta_file = list(Path(tmpdir).glob('*.sigmf-meta'))[0]
+        with open(meta_file) as f:
+            meta = json.load(f)
+        assert len(meta.get('annotations', [])) == 2, "Expected 2 annotations after first flush"
+        print("✓ First flush: 2 annotations on disk")
+
+        # Second batch, flushed on top of the first
+        saver.add_annotation(label='batch_2_a', comment='second flush, annotation A')
+        saver.finalize_annotations()
+
+        with open(meta_file) as f:
+            meta = json.load(f)
+        assert len(meta.get('annotations', [])) == 3, \
+            f"Expected 3 annotations after second flush, got {len(meta.get('annotations', []))}"
+        print("✓ Second flush: all 3 annotations preserved on disk")
+
+        # Third batch flushed via close()
+        saver.add_annotation(label='batch_3_a', comment='third flush via close')
+        saver.close()
+
+        with open(meta_file) as f:
+            meta = json.load(f)
+        assert len(meta.get('annotations', [])) == 4, \
+            f"Expected 4 annotations after close, got {len(meta.get('annotations', []))}"
+        labels = [a.get('core:label') for a in meta['annotations']]
+        assert 'batch_1_a' in labels and 'batch_1_b' in labels
+        assert 'batch_2_a' in labels
+        assert 'batch_3_a' in labels
+        print("✓ close(): all 4 annotations preserved, no data lost across flushes")
+        print("✓ Test 8 PASSED\n")
+
+
 if __name__ == "__main__":
     print("\n" + "=" * 80)
     print("IQSaver Test Suite")
@@ -407,6 +461,7 @@ if __name__ == "__main__":
         test_context_manager,
         test_deferred_annotations,
         test_spectrum_dapp_integration_pattern,
+        test_metadata_accumulation_across_flushes,
     ]
     
     passed = 0

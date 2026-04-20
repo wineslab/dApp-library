@@ -1,0 +1,44 @@
+# Author
+
+- Andrea Lacava <thecave003@gmail.com>
+  - Initial dApp framework design and implementation
+  - E3 ASN.1 protocol definitions and encoder
+  - E3 connection setup and JSON/E3AP dual encoding
+  - Structured E3SM for multi-use-case support
+  - Spectrum Sharing dApp and IQ saver with SigMF compliance
+  - IQ saver file rotation
+  - Dashboard GUI and visualization
+  - Multi-PRB and multi-frequency support
+  - PyPI packaging and release workflow
+
+
+# Contributors
+
+Listed in chronological order of first contribution.
+We are grateful for every contribution, big or small, that helped shape this project.
+
+- Leonardo Bonati <38320780+leonardobonati@users.noreply.github.com>
+  - Debug print cleanup and comments
+
+- Michele Polese <michele.polese@gmail.com>
+  - README improvements and paper reference
+
+- Filippo Olimpieri <126257005+Ninjabippo1205@users.noreply.github.com>
+  - Spectrum Classification dApp via libiq integration
+  - E2SM-dApp report message and xApp control action
+  - dAppReport generation for the Spectrum SM
+  - Scheduler control support
+
+- Chris Wozny <woznych@gmail.com>
+  - Adaptive noise floor logic
+  - DC leakage filtering in PRB blacklist computation
+  - Visualization fixes
+
+- Antonio Scarvaglieri <20925479+absentio@users.noreply.github.com>
+  - dApp deregistration and RAN function unsubscribe
+  - Graceful shutdown and timed execution improvements
+
+- Ayush Patel <ayushnpatel22@gmail.com>
+  - Ground truth labeling system for IQ dataset collection
+  - Dashboard GUI improvements (display rate, waterfall threshold, label selector)
+  - SigMF annotation enhancements

@@ -13,7 +13,7 @@ jobs:
       tag_created: ${{ steps.set_output.outputs.tag_created }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0  # Ensure we fetch all tags
 
@@ -54,11 +54,11 @@ jobs:
     needs: create-tag
     if: ${{ needs.create-tag.outputs.tag_created == 'true' && github.repository == 'wineslab/dApp-library' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           persist-credentials: false
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.8"
       - name: Install pypa/build

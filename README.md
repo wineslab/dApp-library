@@ -53,6 +53,8 @@ This dApp implements a spectrum sharing use case discussed in [our paper](https:
 - `--energy-gui` - Enable the energy spectrum visualization GUI
 - `--iq-plotter-gui` - Enable the I/Q constellation plotter GUI
 - `--demo-gui` - Enable the demonstration GUI showing real-time spectrum occupancy
+- `--show-controls` - Show tunable controls (sampling threshold) in the dashboard GUI. Only meaningful with `--demo-gui`
+- `--ground-truth LABEL` - Initial ground truth label written into IQ annotations (only used with `--save-iqs`). Updatable at runtime via the dashboard GUI when `--demo-gui` is also set. When no PRBs are detected the label is forced to `no_rfi` regardless of what is set
 
 **Radio Configuration:**
 
@@ -74,7 +76,7 @@ This dApp implements a spectrum sharing use case discussed in [our paper](https:
 
 - `--moving-avg-window` - Window size (in samples) for the moving average filter used to smooth energy measurements and detect peaks in the spectrum (default: 30)
 - `--extraction-window` - Number of samples to retain after detecting an energy peak for further analysis (default: 600)
-- `--sampling-threshold` - Down-sampling ratio applied to IQ sensing. An IQ vector will be delivered every Nth sensing (default: 5)
+- `--sampling-threshold` - Controls dashboard visualization rate: a new frame is rendered every N IQ batches (default: 5). Has no effect on IQ delivery from the gNB or on IQ recording to disk. Tunable at runtime via the dashboard when `--show-controls` is active
 
 **Adaptive Noise Floor Parameters:**
 

@@ -106,6 +106,8 @@ def main(args):
         e_sampling=args.e,
         num_subcarrier_spacing=args.num_subcarrier_spacing,
         sampling_threshold=args.sampling_threshold,
+        ground_truth=args.ground_truth,
+        show_controls=args.show_controls,
         dapp_name="SpectrumSharing",
         dapp_version="1.0.0",
         vendor="WinesLab",
@@ -202,7 +204,15 @@ if __name__ == "__main__":
     parser.add_argument('--extraction-window', type=int, default=600,
                         help="Samples to retain after CNN energy peak detection")
     parser.add_argument('--sampling-threshold', type=int, default=5,
-                        help="Deliver IQ every N sensing cycles (each cycle is 10 ms)")
+                        help="Render a new dashboard frame every N IQ batches (visualization only, does not affect IQ delivery or recording)")
+    parser.add_argument('--ground-truth', type=str, default='', metavar='LABEL',
+                        help="Initial ground truth label written into IQ annotations "
+                             "(only used with --save-iqs). "
+                             "Updatable at runtime via the dashboard GUI "
+                             "when --demo-gui is also set.")
+    parser.add_argument('--show-controls', action='store_true', default=False,
+                        help="Show tunable controls (sampling threshold) in the dashboard GUI. "
+                             "Only meaningful with --demo-gui.")
 
     args = parser.parse_args()
     print("Start dApp")

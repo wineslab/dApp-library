@@ -3,21 +3,22 @@ try:
     from flask import Flask, render_template
     from flask_socketio import SocketIO
 except ModuleNotFoundError:
-                    print(
-                        "Optional dependencies for GUI not installed.\n"
-                        "Fix this by running:\n\n"
-                        "    pip install 'dApps[gui]'  # OR\n"
-                        "    pip install 'dApps[all]'\n",
-                        exc_info=True
-                    )
-                    exit(-1)
+    print(
+        "Optional dependencies for GUI not installed.\n"
+        "Fix this by running:\n\n"
+        "    pip install 'dApps[gui]'  # OR\n"
+        "    pip install 'dApps[all]'\n"
+    )
+    exit(-1)
 import numpy as np
 
 class Dashboard:
     # The default values of the dashboard are based on the default configuration
     def __init__(self, buffer_size: int = 100, ofdm_symbol_size: int = 1272, bw: float = 38.16e6, center_freq: float = 3.6192e9,
                  num_prbs: int = 106, first_carrier_offset: int = 900, prb_protected_below: int = 75,
-                 classifier=None, adaptiveThreshold=False, control: bool = False):
+                 classifier=None, adaptiveThreshold=False, control: bool = False,
+                 label_callback=None, initial_label: str = "", port: int = 7778,
+                 show_controls: bool = False):
         # Flask app setup
         self.app = Flask(__name__)
         self.app.config['TEMPLATES_AUTO_RELOAD'] = True
@@ -40,12 +41,22 @@ class Dashboard:
 
         self.classifier = classifier if classifier is not None else None
         self.adaptiveThreshold = adaptiveThreshold
+        self.label_callback = label_callback
+        self.current_label = initial_label
+        self.port = port
+        self.show_controls = show_controls
 
         # SocketIO event handlers
         self.socketio.on_event("connect", self.handle_initial_connection)
+        if self.label_callback is not None:
+            def _on_set_ground_truth_label(label):
+                self.current_label = label
+                self.label_callback(label)
+            self.socketio.on_event("set_ground_truth_label", _on_set_ground_truth_label)
+        self.socketio.on_event("set_sampling_threshold", self._on_set_sampling_threshold)
         self._initialize_plot()
 
-        # We do not show every iqs otherwise the GUI is too slow
+        # Render a new dashboard frame every N IQ batches — does not affect IQ delivery or recording
         self.sampling_counter = 0
         self.sampling_threshold = 5
 
@@ -53,7 +64,8 @@ class Dashboard:
         return render_template("index.html")
 
     def run(self):
-        self.socketio.run(self.app, host="0.0.0.0", port=7778, debug=False, use_reloader=False)
+        self.socketio.run(self.app, host="0.0.0.0", port=self.port, debug=False,
+                          use_reloader=False, allow_unsafe_werkzeug=True)
 
     def _initialize_plot(self):
         self.run_thread = threading.Thread(target=self.run, daemon=True)
@@ -76,8 +88,27 @@ class Dashboard:
             "prb_protected_below": self.prb_protected_below if self.control else None,
             "predicted_label": self.classifier is not None,
             "adaptive_noise_floor": self.adaptiveThreshold,
+            "show_label_selector": self.label_callback is not None,
+            "current_label": self.current_label,
+            "show_controls": self.show_controls,
+            "sampling_threshold": self.sampling_threshold,
         }
         self.socketio.emit("initialize_plot", data_buffer)
+
+    def emit_label(self, label: str):
+        self.current_label = label
+        self.socketio.emit("update_ground_truth_label", label)
+
+    def _on_set_sampling_threshold(self, value):
+        try:
+            rate = int(value)
+        except (TypeError, ValueError):
+            return
+        if rate < 1:
+            return
+        self.sampling_threshold = rate
+        self.socketio.emit("update_sampling_threshold", rate)
+        self.socketio.emit("reset_waterfall")
 
     def _process_iq_data(self, iq_data):
         real_part = iq_data[0::2]  # Even indices: real part
@@ -96,7 +127,7 @@ class Dashboard:
         if plot == "iq_data":
             iq_data = payload
 
-            self.sampling_counter += 1        
+            self.sampling_counter += 1
             if self.sampling_counter >= self.sampling_threshold:
                 magnitude_dB = self._process_iq_data(iq_data)[::-1].tolist() # visualization processing is delegated to client
                 self.socketio.emit("update_plot", {"magnitude": magnitude_dB})
@@ -123,4 +154,32 @@ class Dashboard:
             self.run_thread.join(timeout=1)
 
 if __name__ == "__main__":
-    server_app = Dashboard()
+    import argparse
+    import time
+
+    parser = argparse.ArgumentParser(description="Dashboard interactive demo")
+    parser.add_argument("--initial-label", default="", metavar="LABEL",
+                        help="Ground truth label to pre-populate in the GUI")
+    parser.add_argument("--port", type=int, default=7778)
+    args = parser.parse_args()
+
+    def on_label(label):
+        print(f"[demo] ground_truth_label updated: {label!r}")
+
+    demo = Dashboard(
+        label_callback=on_label,
+        initial_label=args.initial_label,
+        port=args.port,
+    )
+    print(f"Dashboard running at http://localhost:{args.port}")
+    print("Type a label and press Enter to push it to the GUI, or Ctrl-C to quit.")
+    try:
+        while True:
+            label = input("label> ").strip()
+            if label:
+                demo.emit_label(label)
+                print(f"  → pushed {label!r} to browser")
+    except (KeyboardInterrupt, EOFError):
+        pass
+    finally:
+        demo.stop()

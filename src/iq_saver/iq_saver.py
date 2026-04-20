@@ -39,10 +39,11 @@ class IQSaver:
                  dtype: str = "ci16_le",
                  filename: str = None,
                  max_samples_per_file: Optional[int] = None,
+                 rotation_interval: Optional[float] = None,
                  **metadata_kwargs):
         """
         Initialize IQSaver with SigMF-compliant recording configuration.
-        
+
         Args:
             base_path: Directory for recordings (default: current directory)
             center_freq: Center frequency in Hz
@@ -56,6 +57,8 @@ class IQSaver:
             filename: Custom filename (without extension). If None, timestamp-based name is used
             max_samples_per_file: Maximum number of frames (save_samples calls) per file
                 before rotating to a new file. None disables rotation (single file).
+            rotation_interval: Time in seconds before rotating to a new file. None disables
+                time-based rotation. Can be combined with max_samples_per_file.
             **metadata_kwargs: Additional global metadata fields (stored under spear: namespace)
         """
         self.base_path = Path(base_path) if base_path else Path.cwd()
@@ -97,6 +100,10 @@ class IQSaver:
         self.max_samples_per_file = max_samples_per_file
         if max_samples_per_file is not None and max_samples_per_file <= 0:
             raise ValueError("max_samples_per_file must be positive.")
+        self.rotation_interval = rotation_interval
+        if rotation_interval is not None and rotation_interval <= 0:
+            raise ValueError("rotation_interval must be positive.")
+        self._file_start_time: Optional[float] = None
         
         self._session_timestamp_ms: Optional[int] = None
         self._file_index: int = 0
@@ -171,8 +178,9 @@ class IQSaver:
         
         # Write initial metadata file immediately (SigMF requires .sigmf-meta alongside .sigmf-data)
         # This ensures the file exists even if the program is interrupted
-        self._sigmf.tofile(str(self.base_path / base_filename))
-        
+        self._sigmf.tofile(str(self.base_path / base_filename), overwrite=True)
+
+        self._file_start_time = timestamp
         self._is_initialized = True
     
     def _rotate_file(self, timestamp: float) -> None:
@@ -183,7 +191,7 @@ class IQSaver:
             self._file_handle.close()
             self._file_handle = None
         if self._sigmf is not None and self._filename is not None:
-            self._sigmf.tofile(str(self.base_path / self._filename))
+            self._sigmf.tofile(str(self.base_path / self._filename), overwrite=True)
             self._all_files.append(self._filename)
 
         # Reset all state for new file
@@ -195,6 +203,7 @@ class IQSaver:
         self._is_initialized = False
         self._annotation_buffer.clear()
         self._annotation_count = 0
+        self._file_start_time = None
         self._file_index += 1
 
     def _finalize_file(self) -> None:
@@ -208,7 +217,7 @@ class IQSaver:
             self._flush_annotations()
             
             # Write final metadata file
-            self._sigmf.tofile(str(self.base_path / self._filename))
+            self._sigmf.tofile(str(self.base_path / self._filename), overwrite=True)
         
     def _get_iso8601_timestamp(self, timestamp: Optional[float] = None) -> str:
         """Convert Unix timestamp to ISO 8601 format for SigMF with microsecond precision."""
@@ -232,8 +241,12 @@ class IQSaver:
         if timestamp is None:
             timestamp = time.time()
         
-        # Check rotation condition (frame count threshold)
+        # Check rotation conditions (frame count or elapsed time)
         if self.max_samples_per_file is not None and self._sample_count >= self.max_samples_per_file:
+            self._rotate_file(timestamp)
+        elif (self.rotation_interval is not None
+              and self._file_start_time is not None
+              and (timestamp - self._file_start_time) >= self.rotation_interval):
             self._rotate_file(timestamp)
         
         # Initialize file on first write or after rotation
@@ -387,7 +400,7 @@ class IQSaver:
         
         # Write metadata file to disk after flushing annotations
         if self._sigmf is not None and self._filename is not None:
-            self._sigmf.tofile(str(self.base_path / self._filename))
+            self._sigmf.tofile(str(self.base_path / self._filename), overwrite=True)
     
     def update_sample_rate(self, new_sample_rate: float, sampling_threshold: int = None) -> None:
         """
@@ -432,6 +445,31 @@ class IQSaver:
         # Add new capture segment at current IQ sample position
         self._sigmf.add_capture(self._iq_sample_count, metadata=capture_metadata)
     
+    def add_waveform_description(self, timestamp: Optional[float] = None, **kwargs) -> bool:
+        """
+        Add a post-collection waveform description annotation (e.g. from an LLM or external classifier).
+        All kwargs are stored as custom spear: fields at the same sample index as the timestamp.
+        """
+        return self.add_annotation(timestamp=timestamp, label="waveform_description", **kwargs)
+
+    def get_recording_info(self) -> Dict[str, Any]:
+        """Return a snapshot of the current recording session state."""
+        all_files = list(self._all_files)
+        if self._filename:
+            all_files.append(self._filename)
+
+        file_paths = [str(self.base_path / f"{name}.sigmf-data") for name in all_files]
+        file_sizes = {p: Path(p).stat().st_size if Path(p).exists() else 0 for p in file_paths}
+
+        return {
+            "total_samples": self._iq_sample_count,
+            "total_files": len(all_files),
+            "pending_annotations": len(self._annotation_buffer),
+            "duration_seconds": time.time() - self._session_start_time,
+            "file_paths": file_paths,
+            "file_size_bytes": file_sizes,
+        }
+
     def close(self) -> None:
         """
         Finalize recording and write all metadata.
