@@ -51,6 +51,12 @@ I/Q recording is only active when `--save-iqs` is passed. Without it, `--ground-
 The commands below use 53 dB as the noise floor threshold, which matches both the Colosseum
 testbed and the Foxconn RU calibration. Center frequency is 3.75 GHz with 106 PRBs.
 
+> [!IMPORTANT]
+> `--ground-truth` must be set to the label of the **RFI signal being injected** (e.g.
+> `jammer`, `radar`, `lte_aggressor`). Do not use `no_rfi` here: when no PRBs are detected
+> above the threshold the code automatically writes `no_rfi` into the annotation itself —
+> the label you provide is only stamped when interference is actually detected.
+
 ### Static threshold
 
 The detector flags any PRB whose power exceeds a fixed absolute threshold.
@@ -64,7 +70,7 @@ hatch run python examples/spectrum_dapp.py \
   --num-prbs 106 \
   --center-freq 3.75e9 \
   --noise-floor-threshold 53 \
-  --ground-truth no_rfi \
+  --ground-truth <rfi_label> \
   --demo-gui \
   --show-controls
 ```
@@ -78,7 +84,7 @@ hatch run python examples/spectrum_dapp.py \
   --num-prbs 106 \
   --center-freq 3.75e9 \
   --noise-floor-threshold 53 \
-  --ground-truth no_rfi \
+  --ground-truth <rfi_label> \
   --timed 60
 ```
 
@@ -99,7 +105,7 @@ hatch run python examples/spectrum_dapp.py \
   --use-adaptive-noise-floor \
   --noise-floor-threshold 53 \
   --embargo-timeout-secs 5 \
-  --ground-truth no_rfi \
+  --ground-truth <rfi_label> \
   --demo-gui \
   --show-controls
 ```
@@ -115,6 +121,6 @@ hatch run python examples/spectrum_dapp.py \
   --use-adaptive-noise-floor \
   --noise-floor-threshold 53 \
   --embargo-timeout-secs 5 \
-  --ground-truth no_rfi \
+  --ground-truth <rfi_label> \
   --timed 60
 ```
