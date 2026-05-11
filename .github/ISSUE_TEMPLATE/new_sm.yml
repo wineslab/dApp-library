@@ -1,0 +1,90 @@
+name: New Service Model (SM) request
+description: Propose a new E3 Service Model. Service Models always require coordinated changes in both dapps and libe3 — please describe both sides.
+title: "[New SM]: "
+labels: ["enhancement", "service-model", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A Service Model defines messages that flow over the E3 link between the dApp (this repo) and the gNB-side E3 agent (`libe3`). Both sides must land together.
+
+        If you have not yet, see `tools/generate_sm.sh --interactive` to scaffold the dApp side, and `examples/sm_simple/` in libe3 for the agent side.
+
+  - type: input
+    id: name
+    attributes:
+      label: Proposed SM name
+      placeholder: "spectrum_sm, my_custom_sm, ..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: use_case
+    attributes:
+      label: Use case
+      description: What does the SM enable? What problem does it solve that existing SMs don't?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: direction
+    attributes:
+      label: Message direction
+      options:
+        - "gNB → dApp"
+        - "dApp → gNB"
+        - "Both directions"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: encoding
+    attributes:
+      label: Encoding
+      options:
+        - "ASN.1 (preferred for production)"
+        - "JSON (faster prototyping)"
+        - "Both"
+    validations:
+      required: true
+
+  - type: textarea
+    id: schema
+    attributes:
+      label: Proposed message schema
+      description: Paste the ASN.1 module(s) or JSON schema. Even a draft is fine.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: dapp_side
+    attributes:
+      label: dapps side — what changes
+      description: New encoder/decoder under `src/e3interface/`? New dApp subclass under a new module? Reference existing patterns.
+    validations:
+      required: true
+
+  - type: textarea
+    id: libe3_side
+    attributes:
+      label: libe3 side — what changes
+      description: Service handler, registration with `E3Agent`, new SM under `service_models/`. Open the paired issue/PR in the libe3 repo and link it here.
+    validations:
+      required: true
+
+  - type: input
+    id: paired_issue
+    attributes:
+      label: Paired libe3 issue / PR (if any)
+      placeholder: "wineslab/dApp-libe3#123"
+    validations:
+      required: false
+
+  - type: textarea
+    id: oai_side
+    attributes:
+      label: OAI side (if applicable)
+      description: Does this SM also require scheduler hooks or PHY changes in `dApp-openairinterface5g`? Describe briefly. Write "None" if not.
+    validations:
+      required: true

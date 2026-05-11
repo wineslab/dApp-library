@@ -1,0 +1,28 @@
+name: Documentation issue
+description: Report missing, wrong, or unclear documentation (README, docstrings, examples).
+title: "[Docs]: "
+labels: ["documentation"]
+body:
+  - type: input
+    id: location
+    attributes:
+      label: Documentation location
+      description: File path, README section, or URL.
+      placeholder: "README.md § Installation, or src/dapp/dapp.py:42 docstring"
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What is wrong or missing?
+    validations:
+      required: true
+
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: Suggested correction
+      description: Optional. If you have a phrasing in mind, paste it here.
+    validations:
+      required: false

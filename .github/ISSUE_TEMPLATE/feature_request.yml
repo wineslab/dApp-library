@@ -1,0 +1,61 @@
+name: Feature request
+description: Propose a new capability or behavior change for dapps.
+title: "[Feature]: "
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before opening, please discuss substantial changes with the maintainers (issue, email, or any other channel) — see `CONTRIBUTING.md`.
+
+        dapps is one of three paired repositories (with `libe3` and `dApp-openairinterface5g`). Changes that break compatibility with the twin repositories will not be accepted; if your feature touches the E3 interface, please describe the corresponding changes needed in `libe3` and OAI.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / use case
+      description: What are you trying to do? What does the current API or workflow not let you do?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Sketch the API, behavior, configuration flag, or new module. Code snippets welcome.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches you ruled out and why.
+    validations:
+      required: false
+
+  - type: textarea
+    id: twin_repo
+    attributes:
+      label: Twin-repo impact
+      description: Does this require coordinated changes in `libe3` and/or `dApp-openairinterface5g`? If yes, describe them. If no, write "None".
+    validations:
+      required: true
+
+  - type: dropdown
+    id: willing
+    attributes:
+      label: Are you willing to implement this?
+      options:
+        - "Yes, I'll open a PR (in the internal repo)"
+        - "Yes, with maintainer guidance"
+        - "No — proposal only"
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+    validations:
+      required: false

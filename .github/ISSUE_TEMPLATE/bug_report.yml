@@ -1,0 +1,172 @@
+name: Bug report
+description: Report a defect in dapps. Use this when something does not behave as documented.
+title: "[Bug]: "
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. Please fill in every required field — bug reports without reproduction info or environment details cannot be triaged and will be closed.
+
+        Before submitting, please confirm you have searched the existing issues on the public mirror (`wineslab/dApp-library`) and, if you have access, on the internal repository for duplicates.
+
+  - type: checkboxes
+    id: prerequisites
+    attributes:
+      label: Prerequisites
+      options:
+        - label: I have searched existing issues and confirmed this is not a duplicate.
+          required: true
+        - label: I have verified the bug against the latest commit on `main`.
+          required: true
+        - label: I have read `CONTRIBUTING.md`.
+          required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: A clear and concise description of the bug.
+      placeholder: When I run X, I expected Y but got Z.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Numbered list of exact steps. Include the full command lines you ran.
+      value: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include error messages exactly as they appeared.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: example
+    attributes:
+      label: dApp example used
+      description: Which entry point exhibits the bug?
+      options:
+        - examples/spectrum_dapp.py
+        - examples/simple_dapp.py
+        - Custom dApp (subclass of `dapp.dapp.DApp`)
+        - Library code only (no example)
+        - Other / not applicable
+    validations:
+      required: true
+
+  - type: dropdown
+    id: link_transport
+    attributes:
+      label: Link / transport combination
+      description: Must be one of the supported pairs.
+      options:
+        - zmq + ipc
+        - zmq + tcp
+        - posix + ipc
+        - posix + tcp
+        - posix + sctp
+        - Not applicable
+    validations:
+      required: true
+
+  - type: input
+    id: dapps_version
+    attributes:
+      label: dapps version
+      description: Output of `pip show dapps | grep Version` or contents of the `VERSION` file at the commit you tested.
+      placeholder: "0.0.9"
+    validations:
+      required: true
+
+  - type: input
+    id: libe3_version
+    attributes:
+      label: libe3 version (paired against)
+      description: Required if the bug involves the E3 link. Output of `pkg-config --modversion libe3` or the libe3 git commit you built against.
+      placeholder: "0.0.3"
+    validations:
+      required: false
+
+  - type: input
+    id: oai_version
+    attributes:
+      label: OAI commit / branch (if relevant)
+      description: Required if you reproduced the bug against the gNB. Otherwise leave blank.
+      placeholder: "dApp-openairinterface5g @ main commit abcdef"
+    validations:
+      required: false
+
+  - type: input
+    id: python_version
+    attributes:
+      label: Python version
+      description: Output of `python3 --version`. The project requires >= 3.12.
+      placeholder: "3.12.3"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install_method
+    attributes:
+      label: Install method
+      options:
+        - "Editable: pip install -e \".[all]\""
+        - "Tarball: pip install \"dist/*.tar.gz[all]\""
+        - "PyPI: pip install dapps[all]"
+        - Other
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: extras
+    attributes:
+      label: Optional extras installed
+      description: Which optional dependency groups were installed in the failing environment?
+      options:
+        - label: api (influxdb_client)
+        - label: cnn (libiq)
+        - label: gui (flask, flask-socketio, matplotlib)
+        - label: network (pysctp)
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: "Ubuntu 22.04 / 24.04, kernel x.y.z"
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and stack traces
+      description: Paste full dApp stderr / Python traceback. Use a code fence. Truncate only obviously irrelevant lines.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Additional context
+      description: Network captures, gNB-side logs, screenshots, or hypotheses about the root cause.
+    validations:
+      required: false

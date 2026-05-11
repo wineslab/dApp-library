@@ -19,6 +19,47 @@ Please note we have a code of conduct, please follow it in all your interactions
 4. Submitted code must have been tested and should work with all the compatible configurations of the framework.
 5. Merging should always be performed via squash commits. Pull Requests must be updated through rebasing, without duplicating commits or altering the original branch history. Merges without prior approval are not allowed, and any accidental violations will result in the deletion of the merge commit.
 
+## Development Workflow
+
+Active development happens on a **private internal repository**. The **public** repository **`wineslab/dApp-library`** is a 1:1 mirror of that internal repo, updated automatically by `.github/workflows/mirror.yml` on every push to `main`. **Do not open pull requests against the public mirror — they will not be merged.**
+
+### For maintainers and existing collaborators
+
+Branch from the internal repository, open the PR there, follow the templates in `.github/`, and let CI run.
+
+### For external contributors
+
+External contributors must request access to the internal repository before opening a PR. Two channels are accepted:
+
+1. **Preferred:** open an issue on the public mirror at https://github.com/wineslab/dApp-library/issues using the *"Request access to the internal development repository"* contact link (or any template with the `access-request` label). Tell us briefly what you want to work on.
+2. **Fallback:** email **a.lacava@northeastern.edu** with the same information.
+
+Once access is granted, you will be invited to the internal repository; fork it from there, push your branch, and open the PR against the internal repo.
+
+## Mandatory checks
+
+The following are **mandatory** for every contribution. PRs that do not meet them will not be reviewed.
+
+### Issues
+
+- All issues must use one of the templates in `.github/ISSUE_TEMPLATE/` (`bug_report`, `feature_request`, `question`, `documentation`, or `new_sm`). Blank issues are disabled.
+- Required fields in the templates must be completed; placeholder text is not acceptable.
+
+### Pull requests
+
+- All PRs must use `.github/PULL_REQUEST_TEMPLATE.md` and complete every checklist item.
+- The following CI workflow must be green on the latest commit before review:
+  - **`Run tests`** (`.github/workflows/test.yml`) — runs `hatch run pytest tests/ -v` on Python 3.12.
+- The following local checks must be reported in the PR description as run by the contributor (mirroring CI):
+  - `hatch run pytest tests/ -v` passes.
+  - `hatch build` succeeds.
+  - `VERSION` file bumped per [SemVer](https://semver.org/) when public API or wire protocol changes.
+  - `README.md` and/or `CONTRIBUTING.md` updated when contributor- or user-facing behavior changes.
+
+### Service Models and twin-repo coordination
+
+This repository is part of a framework that includes [`libe3`](https://github.com/wineslab/dApp-libe3) (the gNB-side E3 agent) and [`dApp-openairinterface5g`](https://github.com/wineslab/dApp-openairinterface5g) (the OAI fork). PRs that change the E3 wire protocol or add a new Service Model must come with a paired PR in the affected twin repo, linked from the PR description.
+
 ## Code of Conduct
 
 ### Our Pledge
