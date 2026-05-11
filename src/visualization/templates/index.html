@@ -237,7 +237,7 @@
             setTimeout(function() { gtBadge.style.outline = 'none'; }, 400);
         }
 
-        var socket = io.connect('http://' + document.domain + ':' + location.port);
+        var socket = io.connect(location.origin);
         socket.on('initialize_plot', function (data) {
             var ofdm_symbol_size = data.magnitude[0].length;
             var first_carrier_offset = data.first_carrier_offset;
