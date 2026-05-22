@@ -445,6 +445,29 @@ class SpectrumSharingDApp(DApp):
         else:
             all_thresh_per_prb = [self._detector.threshold_db] * len(all_prbs)
 
+        # Per-PRB record of the subcarriers that actually crossed the
+        # threshold in the current frame, with their dB magnitudes. Derived
+        # from the instantaneous power-vs-threshold comparison, not from the
+        # detector's blocked mask: under the adaptive detector that mask is
+        # embargo-extended and can stay true after the instantaneous SNR has
+        # fallen back below threshold, which would record subcarriers whose
+        # power_db is below threshold. PRB indices are stored as strings
+        # because this structure is serialised to SigMF JSON, where object
+        # keys are always strings; each value is a list of
+        # [sc_index_within_prb, db] pairs, where sc_index_within_prb is the
+        # local 0..(sc-1) offset inside the PRB (not the absolute FFT-bin
+        # index).
+        if isinstance(self._detector, StaticThresholdDetector) or noise_floor_db is None:
+            detected_now = power_db > self._detector.threshold_db
+        else:
+            detected_now = power_db >= noise_floor_db + self._detector.threshold_db
+        above_threshold_sc_db_per_prb: dict[str, list[list[float]]] = {}
+        for prb, s in zip(all_prbs, all_sc_starts):
+            local_offsets = np.where(detected_now[s: s + sc])[0].tolist()
+            above_threshold_sc_db_per_prb[str(int(prb))] = [
+                [j, float(power_db[s + j])] for j in local_offsets
+            ]
+
         label = "prb_control" if control_fired else "prb_detection"
 
         base = dict(
@@ -453,6 +476,7 @@ class SpectrumSharingDApp(DApp):
             comment=comment,
             all_detected_prbs=all_prbs.tolist(),
             all_power_db_per_prb=all_power_per_prb,
+            above_threshold_sc_db_per_prb=above_threshold_sc_db_per_prb,
             all_threshold_db_per_prb=all_thresh_per_prb,
             # prb_blacklist only populated when a control message was actually sent;
             # otherwise the eligible-zone filtering is irrelevant to the recording.
