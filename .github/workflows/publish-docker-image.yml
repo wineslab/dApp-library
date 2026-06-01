@@ -1,0 +1,54 @@
+name: Publish OAI dApp Docker Image
+
+# Builds the fully-runnable OAI + dApp image (UHD + gNB/nrUE with E3+E2 + libe3 + dApp)
+# and pushes it to GHCR whenever a release is published on the public mirror.
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  push_to_registry:
+    name: Build and push OAI dApp image to GHCR
+    # Releases are created on the public mirror; never run on the private repo.
+    if: github.repository == 'wineslab/dApp-library'
+    runs-on: ubuntu-latest
+    steps:
+      # The full UHD + OAI(+UE) + FlexRIC compile is large; reclaim disk on the hosted runner.
+      - name: Free up disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+
+      - name: Check out the repo
+        uses: actions/checkout@v4
+
+      - name: Read VERSION
+        id: ver
+        run: echo "version=$(cat VERSION | tr -d '[:space:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Build the UHD base locally (not pushed); the OAI image FROMs `uhd:4.7`.
+      - name: Build UHD base image
+        run: docker build -f docker/Dockerfile-uhd-ubuntu24 -t uhd:4.7 docker/
+
+      - name: Build OAI dApp image
+        run: |
+          IMAGE=ghcr.io/${{ github.repository_owner }}/dapp-oai
+          docker build -f docker/Dockerfile-oai-dapp \
+            --build-arg GIT_REF_DAPP=${{ github.event.release.tag_name }} \
+            -t "$IMAGE:latest" \
+            -t "$IMAGE:${{ steps.ver.outputs.version }}" \
+            docker/
+
+      - name: Push image (latest + version tags)
+        run: docker push --all-tags ghcr.io/${{ github.repository_owner }}/dapp-oai
