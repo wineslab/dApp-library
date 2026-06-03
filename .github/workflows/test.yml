@@ -17,8 +17,13 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install hatch
-        run: pip install hatch
+      - name: Install build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake swig nlohmann-json3-dev
+
+      - name: Install package (editable, with test deps)
+        run: pip install -e ".[all]" pytest
 
       - name: Run tests
-        run: hatch run pytest tests/ -v
+        run: pytest tests/ -v

@@ -30,8 +30,8 @@ Closes #
 
 These mirror what CI (`.github/workflows/test.yml`) enforces. **All boxes must be ticked before review.**
 
-- [ ] `hatch run pytest tests/ -v` passes locally on Python 3.12
-- [ ] `hatch build` succeeds (verifies packaging metadata)
+- [ ] `pytest tests/ -v` passes locally on Python 3.12 (after `pip install -e ".[all]"`)
+- [ ] `python -m build` succeeds (verifies packaging metadata and the C++/SWIG build)
 - [ ] `VERSION` file bumped per [SemVer](https://semver.org/) if the public API or wire protocol changed
 - [ ] `README.md` updated if interface, environment variables, or workflow changed
 - [ ] `CONTRIBUTING.md` updated if contributor-facing rules changed

@@ -1,27 +1,32 @@
 [build-system]
-requires = [ "hatchling" ]
-build-backend = "hatchling.build"
+requires = ["scikit-build-core>=0.8", "swig>=4.0", "numpy"]
+build-backend = "scikit_build_core.build"
 
 
 [project]
 name = "dapps"
-dynamic = [ "version" ]
+dynamic = ["version"]
 description = "A library for creating and connecting dApps to Open RAN units."
 readme = "README.md"
 requires-python = ">=3.12"
-keywords = [ "dApps", "O-RAN", "5G", "cellular", "networks" ]
+keywords = ["dApps", "O-RAN", "5G", "cellular", "networks"]
 classifiers = [
-"Development Status :: 4 - Beta",
-"Programming Language :: Python",
-"Programming Language :: Python :: 3.12",
-"Programming Language :: Python :: Implementation :: CPython",
-"Programming Language :: Python :: Implementation :: PyPy"
+    "Development Status :: 4 - Beta",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Python :: Implementation :: PyPy",
 ]
 license = "Apache-2.0"
-license-files = [
-    "LICENSE",
+license-files = ["LICENSE"]
+dependencies = [
+    "asn1tools",
+    "typing_extensions",
+    "numpy",
+    "pyzmq",
+    "sigmf",
+    "jsonschema>=4.18.0",
 ]
-dependencies = [ "asn1tools", "typing_extensions", "numpy", "pyzmq", "sigmf", "jsonschema>=4.18.0" ]
 
 authors = [
     {name = "Andrea Lacava", email = "thecave003@gmail.com"},
@@ -36,37 +41,48 @@ Source = "https://github.com/wineslab/dApp-library"
 
 
 [project.optional-dependencies]
-api = [ "influxdb_client" ]
-cnn = [ "libiq" ]
-gui = [ "flask", "flask-socketio", "matplotlib" ]
-network = [ "pysctp" ]
+api = ["influxdb_client"]
+cnn = ["libiq"]
+gui = ["flask", "flask-socketio", "matplotlib"]
+network = ["pysctp"]
 all = [
-"pysctp",
-"flask",
-"flask-socketio",
-"matplotlib",
-"influxdb_client",
-"libiq"
+    "pysctp",
+    "flask",
+    "flask-socketio",
+    "matplotlib",
+    "influxdb_client",
+    "libiq",
 ]
 
 
-[tool.hatch.envs.default]
-features = ["gui", "api", "network"]
-dependencies = ["pytest"]
+[tool.scikit-build]
+cmake.version = ">=3.16"
+cmake.build-type = "Release"
+build-dir = "build/{wheel_tag}"
 
-[tool.hatch.version]
-path = "VERSION"
-pattern = "(?P<version>\\d+\\.\\d+\\.\\d+)"
-
-
-[tool.hatch.build.targets.wheel]
-packages = [
-"src/dapp",
-"src/e3interface",
-"src/spectrum",
-"src/nvidia",
-"src/simple",
-"src/iq_saver",
-"src/visualization"
+# Pure-Python packages laid out under src/. scikit-build-core copies these
+# into the wheel; CMake then drops the SWIG outputs into iq_saver/ next to
+# the Python facade.
+wheel.packages = [
+    "src/dapp",
+    "src/e3interface",
+    "src/spectrum",
+    "src/nvidia",
+    "src/simple",
+    "src/iq_saver",
+    "src/visualization",
 ]
-sources = [ "src" ]
+
+# Include the libiqsaver C++ tree and the root CMake in the sdist so
+# users can build wheels from a published source tarball.
+sdist.include = [
+    "VERSION",
+    "CMakeLists.txt",
+    "libiqsaver/**",
+]
+
+
+[tool.scikit-build.metadata.version]
+provider = "scikit_build_core.metadata.regex"
+input = "VERSION"
+regex = "^(?P<value>\\d+\\.\\d+\\.\\d+)"

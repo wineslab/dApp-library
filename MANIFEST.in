@@ -1,5 +1,6 @@
 include VERSION
-include requirements.txt
 include README.md
-include_package_data=True 
-recursive-include dapps/visualization/templates *
+include LICENSE
+include CMakeLists.txt
+recursive-include libiqsaver *
+recursive-include src/visualization/templates *

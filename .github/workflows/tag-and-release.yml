@@ -63,8 +63,14 @@ jobs:
           python-version: "3.8"
       - name: Install pypa/build
         run: python3 -m pip install build --user
-      - name: Build a binary wheel and a source tarball
-        run: python3 -m build
+      - name: Build a source tarball (sdist)
+        # sdist only: the compiled extension produces a non-portable
+        # linux_x86_64 wheel that PyPI rejects. `pip install dapps` builds the
+        # sdist on the user's machine; scikit-build-core + FetchContent pull
+        # cmake/swig/ninja/nlohmann automatically, so no system prereqs are
+        # required. Building the sdist does not compile anything, so this job
+        # needs no C++ toolchain or nlohmann/json either.
+        run: python3 -m build --sdist
       - name: Store the distribution packages
         uses: actions/upload-artifact@v4
         with:
@@ -113,7 +119,6 @@ jobs:
         with:
           inputs: |
             ./dist/*.tar.gz
-            ./dist/*.whl
       - name: Create GitHub Release
         env:
           GITHUB_TOKEN: ${{ github.token }}

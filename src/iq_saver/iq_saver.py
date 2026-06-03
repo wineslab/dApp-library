@@ -1,503 +1,215 @@
-#!/usr/bin/env python3
 """
-IQSaver - SigMF-compliant IQ sample recorder with sample-count-based file rotation
-and deferred annotation support for the SPEAR dApp project.
+IQSaver — Python facade over the libiqsaver C++ writer (via SWIG).
+
+This module preserves the original pure-Python IQSaver API so that
+existing callers (spectrum_dapp.py, tests/test_iq_saver.py) keep
+working unchanged. The actual SigMF serialisation, file rotation,
+and annotation buffering now happen in C++.
 """
+
+from __future__ import annotations
+
+import json
 import time
-import numpy as np
-from typing import Optional, Dict, List, Any
 from pathlib import Path
-import sigmf
-from sigmf import SigMFFile
+from typing import Any, Dict, List, Optional
+
+import numpy as np
+
+from iq_saver import iqsaver_native as _native
 
 __author__ = "Andrea Lacava"
 
+# Reserved Python-side keys that should not be forwarded as JSON-encoded
+# extra metadata to the C++ writer — they map to dedicated C++ fields.
+_RESERVED_GLOBAL_KWARGS = {"sampling_threshold"}
+
+
+def _to_jsonable(value: Any) -> Any:
+    """Convert numpy arrays/scalars into JSON-friendly Python primitives."""
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, (np.integer,)):
+        return int(value)
+    if isinstance(value, (np.floating,)):
+        return float(value)
+    if isinstance(value, (np.bool_,)):
+        return bool(value)
+    if isinstance(value, dict):
+        return {k: _to_jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_to_jsonable(v) for v in value]
+    return value
+
 
 class IQSaver:
-    """
-    SigMF-compliant IQ sample recorder 
-    Features:
-    - Sample-count-based file rotation (configurable max samples per file)
-    - Timestamp-indexed annotation (can be added post-capture)
-        - Per-annotation wall-clock timestamps stored as `spear:timestamp` and exported
-            to the SigMF `core:datetime` field when written
-    - Semantic waveform description support
-    - High-performance write (no compression during capture)
-    - Complete SigMF metadata with custom 'spear:' namespace
-    - Immediate .sigmf-meta file creation for crash safety
-    """
-    
-    def __init__(self,
-                 base_path: str = None,
-                 center_freq: float = 3.6192e9,
-                 bandwidth: float = None,
-                 sample_rate: float = None,
-                 annotation_flush_interval: int = 200,
-                 author: str = "SPEAR dApp",
-                 description: str = "5G NR Spectrum Sharing IQ Captures",
-                 hw_info: str = "",
-                 dtype: str = "ci16_le",
-                 filename: str = None,
-                 max_samples_per_file: Optional[int] = None,
-                 rotation_interval: Optional[float] = None,
-                 **metadata_kwargs):
-        """
-        Initialize IQSaver with SigMF-compliant recording configuration.
+    """SigMF-compliant IQ-sample recorder (C++ backend via SWIG)."""
 
-        Args:
-            base_path: Directory for recordings (default: current directory)
-            center_freq: Center frequency in Hz
-            bandwidth: Signal bandwidth in Hz
-            sample_rate: Actual sample rate in Hz (defaults to bandwidth if not provided)
-            annotation_flush_interval: Number of annotations before auto-flush (default: 200)
-            author: Author/system identifier
-            description: Recording session description
-            hw_info: Hardware/RU information (e.g., "USRP B210", "RU config")
-            dtype: SigMF data type (default: ci16_le for complex int16 little-endian)
-            filename: Custom filename (without extension). If None, timestamp-based name is used
-            max_samples_per_file: Maximum number of frames (save_samples calls) per file
-                before rotating to a new file. None disables rotation (single file).
-            rotation_interval: Time in seconds before rotating to a new file. None disables
-                time-based rotation. Can be combined with max_samples_per_file.
-            **metadata_kwargs: Additional global metadata fields (stored under spear: namespace)
-        """
+    def __init__(
+        self,
+        base_path: Optional[str] = None,
+        center_freq: float = 3.6192e9,
+        bandwidth: Optional[float] = None,
+        sample_rate: Optional[float] = None,
+        annotation_flush_interval: int = 200,
+        author: str = "SPEAR dApp",
+        description: str = "5G NR Spectrum Sharing IQ Captures",
+        hw_info: str = "",
+        dtype: str = "ci16_le",
+        filename: Optional[str] = None,
+        max_samples_per_file: Optional[int] = None,
+        rotation_interval: Optional[float] = None,
+        **metadata_kwargs: Any,
+    ) -> None:
         self.base_path = Path(base_path) if base_path else Path.cwd()
         self.base_path.mkdir(parents=True, exist_ok=True)
-        
-        # Radio configuration
-        self.center_freq = center_freq
-        self.bandwidth = bandwidth
-        self.sample_rate = sample_rate if sample_rate else bandwidth
+
+        self.center_freq = float(center_freq)
+        self.bandwidth = float(bandwidth) if bandwidth else 0.0
+        self.sample_rate = float(sample_rate) if sample_rate else self.bandwidth
         self.dtype = dtype
-        
-        # Recording configuration
         self.annotation_flush_interval = annotation_flush_interval
         self.author = author
         self.description = description
         self.hw_info = hw_info
-        self.metadata_kwargs = metadata_kwargs
-        
-        # Recording state
-        self._sigmf: Optional[SigMFFile] = None
-        self._file_handle: Optional[object] = None
-        self._filename: Optional[str] = None
-        self._data_path: Optional[str] = None
-        
-        # Counters
-        self._sample_count: int = 0      # saved frame count (for rotation threshold)
-        self._iq_sample_count: int = 0   # actual IQ samples written (for sample_start)
-        self._is_initialized: bool = False
-        
-        # Annotation tracking
-        self._annotation_buffer: List[Dict[str, Any]] = []
-        self._annotation_count: int = 0
-        
-        # Session metadata
-        self._session_start_time = time.time()
-        self._custom_filename = filename
+        self.metadata_kwargs: Dict[str, Any] = dict(metadata_kwargs)
 
-        # File rotation config
-        self.max_samples_per_file = max_samples_per_file
         if max_samples_per_file is not None and max_samples_per_file <= 0:
             raise ValueError("max_samples_per_file must be positive.")
-        self.rotation_interval = rotation_interval
         if rotation_interval is not None and rotation_interval <= 0:
             raise ValueError("rotation_interval must be positive.")
-        self._file_start_time: Optional[float] = None
-        
-        self._session_timestamp_ms: Optional[int] = None
-        self._file_index: int = 0
-        self._all_files: List[str] = []
-        
-    def _initialize_file(self, timestamp: Optional[float] = None) -> None:
-        """
-        Initialize the SigMF recording file.
-        
-        Args:
-            timestamp: Unix timestamp in seconds (default: current time)
-        """
-        if self._is_initialized:
-            return
-            
-        # Generate filename with millisecond precision
-        if timestamp is None:
-            timestamp = time.time()
-        
-        if self._custom_filename:
-            base_filename = f"{self._custom_filename}_{self._file_index:04d}"
-        else:
-            if self._file_index == 0:
-                self._session_timestamp_ms = int(timestamp * 1000)
-            base_filename = f"spectrum_iq_{self._session_timestamp_ms}_{self._file_index:04d}"
-        
-        self._filename = base_filename
-        
-        data_path = self.base_path / f"{base_filename}.sigmf-data"
-        
-        # Open data file for writing
-        self._file_handle = open(data_path, 'wb', buffering=1024*1024)  # 1MB buffer
-        
-        # Create SigMF metadata
-        self._sigmf = SigMFFile(
-            global_info={
-                SigMFFile.DATATYPE_KEY: self.dtype,
-                SigMFFile.SAMPLE_RATE_KEY: self.sample_rate,
-                SigMFFile.AUTHOR_KEY: self.author,
-                SigMFFile.DESCRIPTION_KEY: self.description,
-                SigMFFile.VERSION_KEY: sigmf.__specification__,
-            }
+
+        cfg = _native.IQSaverConfigSwig()
+        cfg.base_path = str(self.base_path)
+        cfg.center_freq = self.center_freq
+        cfg.bandwidth = self.bandwidth
+        cfg.sample_rate = self.sample_rate
+        cfg.annotation_flush_interval = int(annotation_flush_interval)
+        cfg.author = author
+        cfg.description = description
+        cfg.hw_info = hw_info
+        cfg.dtype = dtype
+        cfg.filename = filename or ""
+        cfg.max_samples_per_file = (
+            -1 if max_samples_per_file is None else int(max_samples_per_file)
         )
-        
-        # Store data file path for later
-        self._data_path = str(data_path)
-        
-        # Add hardware info if provided
-        if self.hw_info:
-            self._sigmf.set_global_field("core:hw", self.hw_info)
-        
-        # Add custom SPEAR metadata
-        for key, value in self.metadata_kwargs.items():
-            if key != 'sampling_threshold':
-                self._sigmf.set_global_field(f"spear:{key}", value)
-        
-        # Add first capture segment with sampling_threshold
-        capture_metadata = {
-            SigMFFile.FREQUENCY_KEY: self.center_freq,
-            SigMFFile.DATETIME_KEY: self._get_iso8601_timestamp(timestamp),
-        }
-        
-        # Add bandwidth if provided
-        if self.bandwidth:
-            capture_metadata["core:bandwidth"] = self.bandwidth
-        
-        # Add sampling_threshold to capture metadata if provided
-        if 'sampling_threshold' in self.metadata_kwargs:
-            capture_metadata["spear:sampling_threshold"] = self.metadata_kwargs['sampling_threshold']
-        
-        self._sigmf.add_capture(0, metadata=capture_metadata)
-        
-        # Write initial metadata file immediately (SigMF requires .sigmf-meta alongside .sigmf-data)
-        # This ensures the file exists even if the program is interrupted
-        self._sigmf.tofile(str(self.base_path / base_filename), overwrite=True)
+        cfg.rotation_interval = (
+            -1.0 if rotation_interval is None else float(rotation_interval)
+        )
+        cfg.extension_namespace = "spear"
+        cfg.extra_metadata_json = json.dumps(
+            {k: _to_jsonable(v) for k, v in metadata_kwargs.items()}
+        )
 
-        self._file_start_time = timestamp
-        self._is_initialized = True
-    
-    def _rotate_file(self, timestamp: float) -> None:
-        """Close current file and start a new one for sample-count-based rotation."""
-        # Finalize current recording
-        self._flush_annotations()
-        if self._file_handle is not None:
-            self._file_handle.close()
-            self._file_handle = None
-        if self._sigmf is not None and self._filename is not None:
-            self._sigmf.tofile(str(self.base_path / self._filename), overwrite=True)
-            self._all_files.append(self._filename)
+        self._writer = _native.IQSaverWriterSwig(cfg)
+        self._closed = False
+        # Mirror counters that the Python tests read indirectly through
+        # get_recording_info(); the canonical state lives in C++.
+        self._session_start_time = time.time()
 
-        # Reset all state for new file
-        self._sigmf = None
-        self._filename = None
-        self._data_path = None
-        self._sample_count = 0
-        self._iq_sample_count = 0
-        self._is_initialized = False
-        self._annotation_buffer.clear()
-        self._annotation_count = 0
-        self._file_start_time = None
-        self._file_index += 1
+    # ------------------------------------------------------------------
+    # Saving samples
+    # ------------------------------------------------------------------
 
-    def _finalize_file(self) -> None:
-        """Finalize the recording file and write metadata."""
-        if self._file_handle is not None:
-            self._file_handle.close()
-            self._file_handle = None
-        
-        if self._sigmf is not None and self._filename is not None:
-            # Flush any pending annotations
-            self._flush_annotations()
-            
-            # Write final metadata file
-            self._sigmf.tofile(str(self.base_path / self._filename), overwrite=True)
-        
-    def _get_iso8601_timestamp(self, timestamp: Optional[float] = None) -> str:
-        """Convert Unix timestamp to ISO 8601 format for SigMF with microsecond precision."""
-        if timestamp is None:
-            timestamp = time.time()
-        from datetime import datetime, timezone
-        dt = datetime.fromtimestamp(timestamp, tz=timezone.utc)
-        return dt.isoformat(timespec='microseconds')
-    
-    def save_samples(self, iq_data: np.ndarray, timestamp: Optional[float] = None) -> int:
-        """
-        Save IQ samples to the recording file.
-        
-        Args:
-            iq_data: Complex IQ samples (numpy array of complex type) or int16 interleaved I/Q
-            timestamp: Unix timestamp in seconds (default: current time)
-            
-        Returns:
-            sample_index: Sample index for this write (for annotation reference)
-        """
-        if timestamp is None:
-            timestamp = time.time()
-        
-        # Check rotation conditions (frame count or elapsed time)
-        if self.max_samples_per_file is not None and self._sample_count >= self.max_samples_per_file:
-            self._rotate_file(timestamp)
-        elif (self.rotation_interval is not None
-              and self._file_start_time is not None
-              and (timestamp - self._file_start_time) >= self.rotation_interval):
-            self._rotate_file(timestamp)
-        
-        # Initialize file on first write or after rotation
-        if not self._is_initialized:
-            self._initialize_file(timestamp)
-        
-        # Ensure data is in the correct format for writing
-        # SigMF expects complex64 (cf32_le) or complex int16 (ci16_le)
+    def save_samples(self, iq_data: np.ndarray,
+                     timestamp: Optional[float] = None) -> int:
+        if self._closed:
+            raise RuntimeError("IQSaver is closed")
+        if not isinstance(iq_data, np.ndarray):
+            raise TypeError(
+                f"iq_data must be a numpy array, got {type(iq_data)!r}")
+
         if iq_data.dtype == np.complex64:
-            # Already in correct format for cf32_le
-            write_data = iq_data
-            num_samples = len(iq_data)
+            write_data = np.ascontiguousarray(iq_data)
+            num_samples = len(write_data)
         elif iq_data.dtype == np.complex128:
-            # Convert to complex64
-            write_data = iq_data.astype(np.complex64)
-            num_samples = len(iq_data)
+            write_data = np.ascontiguousarray(iq_data.astype(np.complex64))
+            num_samples = len(write_data)
         elif iq_data.dtype == np.int16:
-            # Interleaved I/Q int16 - convert to complex for proper sample count
-            # But write as-is if dtype is ci16_le
             if self.dtype == "ci16_le":
-                write_data = iq_data
-                num_samples = len(iq_data) // 2
+                write_data = np.ascontiguousarray(iq_data)
+                num_samples = len(write_data) // 2
             else:
-                # Convert int16 pairs to complex64
-                iq_complex = iq_data[::2].astype(np.float32) + 1j * iq_data[1::2].astype(np.float32)
-                write_data = iq_complex.astype(np.complex64)
-                num_samples = len(iq_complex)
+                iq_complex = (iq_data[::2].astype(np.float32) +
+                              1j * iq_data[1::2].astype(np.float32))
+                write_data = np.ascontiguousarray(iq_complex.astype(np.complex64))
+                num_samples = len(write_data)
         else:
-            raise ValueError(f"Unsupported data type: {iq_data.dtype}. Use complex64, complex128, or int16")
-        
-        # Write to file
-        write_data.tofile(self._file_handle)
-        
-        # Update counters:
-        # - return the true IQ sample offset (before this write)
-        # - increment frame counter (used for rotation threshold)
-        # - increment IQ sample counter by number of samples written
-        sample_index = self._iq_sample_count
-        self._sample_count += 1
-        self._iq_sample_count += num_samples
+            raise ValueError(
+                f"Unsupported data type: {iq_data.dtype}. "
+                "Use complex64, complex128, or int16")
 
-        return sample_index
-    
+        ts = -1.0 if timestamp is None else float(timestamp)
+        return int(self._writer.save_samples_buf(write_data, int(num_samples), ts))
+
+    # ------------------------------------------------------------------
+    # Annotations
+    # ------------------------------------------------------------------
+
     def add_annotation(self,
-                      start_sample: Optional[int] = None,
-                      label: str = "",
-                      comment: str = "",
-                      timestamp: Optional[float] = None,
-                      **custom_fields) -> bool:
-        """
-        Add annotation to capture.
-        
-        Args:
-            start_sample: Sample offset (if None, uses current sample count)
-            label: Annotation label (e.g., "prb_control", "interference")
-            comment: Human-readable description
-            timestamp: Wall-clock Unix timestamp in seconds for this annotation. If provided
-                it will be stored as `spear:timestamp` and translated to the SigMF
-                `core:datetime` field when annotations are flushed.
-            **custom_fields: Custom annotation fields (stored with spear: prefix)
-            
-        Returns:
-            Success boolean
-            
-        Examples:
-            # Annotation at specific sample index
-            saver.add_annotation(start_sample=1000, label="prb_blacklist", 
-                               prb_list=[76,77,78], reason="interference")
-            
-            # Annotation at current position
-            saver.add_annotation(label="waveform_type",
-                               comment="5G NR uplink with PUSCH")
-        """
-        if not self._is_initialized:
-            return False
-        
-        # Build annotation. Default sample_start uses true IQ sample offset.
-        annotation = {
-            "sample_start": start_sample if start_sample is not None else self._iq_sample_count,
-            "label": label,
-        }
-        
-        if comment:
-            annotation["comment"] = comment
+                       start_sample: Optional[int] = None,
+                       label: str = "",
+                       comment: str = "",
+                       timestamp: Optional[float] = None,
+                       **custom_fields: Any) -> bool:
+        custom_json = json.dumps(
+            {k: _to_jsonable(v) for k, v in custom_fields.items()})
+        return bool(self._writer.add_annotation(
+            -1 if start_sample is None else int(start_sample),
+            label,
+            comment,
+            -1.0 if timestamp is None else float(timestamp),
+            custom_json,
+        ))
 
-        # Store provided wall-clock timestamp in the annotation (preserve original key)
-        if timestamp is not None:
-            annotation["spear:timestamp"] = timestamp
-        
-        # Add custom fields with spear: prefix
-        for key, value in custom_fields.items():
-            if isinstance(value, np.ndarray):
-                value = value.tolist()
-            annotation[f"spear:{key}"] = value
-        
-        # Add to buffer
-        self._annotation_buffer.append(annotation)
-        self._annotation_count += 1
-        
-        # Auto-flush if threshold reached
-        if self._annotation_count >= self.annotation_flush_interval:
-            self.finalize_annotations()
-        
-        return True
-    
-    def _flush_annotations(self) -> None:
-        """Flush annotations to the metadata file."""
-        if self._sigmf is None:
-            return
-            
-        if len(self._annotation_buffer) == 0:
-            return
-        
-        for annotation in self._annotation_buffer:
-            start_sample = annotation.get("sample_start", 0)
-            
-            # Build metadata dict for annotation
-            ann_metadata = {}
-
-            # Add core fields
-            if "label" in annotation:
-                ann_metadata[SigMFFile.LABEL_KEY] = annotation["label"]
-            if "comment" in annotation:
-                ann_metadata[SigMFFile.COMMENT_KEY] = annotation["comment"]
-
-            # If the annotation carries a wall-clock timestamp, map it to the SigMF datetime
-            if "spear:timestamp" in annotation:
-                ann_metadata[SigMFFile.DATETIME_KEY] = self._get_iso8601_timestamp(annotation["spear:timestamp"])
-
-            # Add custom spear: fields (exclude reserved keys)
-            for key, value in annotation.items():
-                if key.startswith("spear:") and key not in ["spear:timestamp"]:
-                    ann_metadata[key] = value
-            
-            # Add annotation without length parameter
-            self._sigmf.add_annotation(
-                start_sample,  # start index
-                metadata=ann_metadata
-            )
-        
-        # Clear buffer
-        self._annotation_buffer.clear()
-        self._annotation_count = 0
-    
     def finalize_annotations(self) -> None:
-        """
-        Write all pending annotations to the .sigmf-meta file.
-        Should be called periodically or at end of session.
-        """
-        self._flush_annotations()
-        
-        # Write metadata file to disk after flushing annotations
-        if self._sigmf is not None and self._filename is not None:
-            self._sigmf.tofile(str(self.base_path / self._filename), overwrite=True)
-    
-    def update_sample_rate(self, new_sample_rate: float, sampling_threshold: int = None) -> None:
-        """
-        Update the sample rate dynamically during recording.
-        
-        This method creates a new capture segment to mark the sampling threshold change.
-        Note: The global sample_rate is NOT changed - it represents the actual sensing rate.
-        Only the spear:sampling_threshold and spear:effective_sample_rate are updated per
-        capture segment, making the time axis reconstructable without external context.
-        
-        Args:
-            new_sample_rate: New effective sample rate in Hz (stored in capture segment metadata)
-            sampling_threshold: New sampling threshold value (creates new capture segment)
-            
-        Example:
-            # Update when sampling threshold changes
-            new_rate = 1 / (0.01 * sampling_threshold)
-            iq_saver.update_sample_rate(new_rate, sampling_threshold=sampling_threshold)
-        """
-        # Note: We do NOT update self.sample_rate or the global field
-        # The global sample_rate represents the actual sensing rate which is constant
-        
-        # Create a new capture segment if initialized and sampling_threshold provided
-        if self._sigmf is None or sampling_threshold is None:
-            return
-        
-        # Create a new capture segment at the current sample position
-        # to mark the change in sampling parameters
-        capture_metadata = {
-            SigMFFile.FREQUENCY_KEY: self.center_freq,
-            SigMFFile.DATETIME_KEY: self._get_iso8601_timestamp(),
-            "spear:sampling_threshold": sampling_threshold,
-            "spear:effective_sample_rate": new_sample_rate,
-        }
+        self._writer.finalize_annotations()
 
-        if self.bandwidth:
-            capture_metadata["core:bandwidth"] = self.bandwidth
-        
-        # Update metadata_kwargs so future references have the new value
-        self.metadata_kwargs['sampling_threshold'] = sampling_threshold
-    
-        # Add new capture segment at current IQ sample position
-        self._sigmf.add_capture(self._iq_sample_count, metadata=capture_metadata)
-    
-    def add_waveform_description(self, timestamp: Optional[float] = None, **kwargs) -> bool:
-        """
-        Add a post-collection waveform description annotation (e.g. from an LLM or external classifier).
-        All kwargs are stored as custom spear: fields at the same sample index as the timestamp.
-        """
-        return self.add_annotation(timestamp=timestamp, label="waveform_description", **kwargs)
+    def update_sample_rate(self,
+                           new_sample_rate: float,
+                           sampling_threshold: Optional[int] = None) -> None:
+        self._writer.update_sample_rate(
+            float(new_sample_rate),
+            -1 if sampling_threshold is None else int(sampling_threshold),
+        )
+        if sampling_threshold is not None:
+            self.metadata_kwargs["sampling_threshold"] = sampling_threshold
+
+    def add_waveform_description(self,
+                                 timestamp: Optional[float] = None,
+                                 **kwargs: Any) -> bool:
+        fields_json = json.dumps(
+            {k: _to_jsonable(v) for k, v in kwargs.items()})
+        return bool(self._writer.add_waveform_description(
+            -1.0 if timestamp is None else float(timestamp),
+            fields_json,
+        ))
+
+    # ------------------------------------------------------------------
+    # Introspection / lifecycle
+    # ------------------------------------------------------------------
 
     def get_recording_info(self) -> Dict[str, Any]:
-        """Return a snapshot of the current recording session state."""
-        all_files = list(self._all_files)
-        if self._filename:
-            all_files.append(self._filename)
-
-        file_paths = [str(self.base_path / f"{name}.sigmf-data") for name in all_files]
-        file_sizes = {p: Path(p).stat().st_size if Path(p).exists() else 0 for p in file_paths}
-
-        return {
-            "total_samples": self._iq_sample_count,
-            "total_files": len(all_files),
-            "pending_annotations": len(self._annotation_buffer),
-            "duration_seconds": time.time() - self._session_start_time,
-            "file_paths": file_paths,
-            "file_size_bytes": file_sizes,
-        }
+        info = json.loads(self._writer.get_recording_info())
+        # file_size_bytes is delivered as a JSON object keyed by path;
+        # Python tests treat it as a dict, so leave the shape as-is.
+        return info
 
     def close(self) -> None:
-        """
-        Finalize recording and write all metadata.
-        Should be called at the end of the recording session.
-        """
-        # Flush all pending annotations
-        self.finalize_annotations()
-        
-        # Finalize file
-        self._finalize_file()
-        if self._filename:
-            self._all_files.append(self._filename)
-    
-    def __enter__(self):
-        """Context manager entry."""
+        if self._closed:
+            return
+        self._writer.close()
+        self._closed = True
+
+    def __enter__(self) -> "IQSaver":
         return self
-    
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        """Context manager exit."""
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
         self.close()
         return False
-    
-    def __del__(self):
-        """Destructor to ensure cleanup on garbage collection."""
+
+    def __del__(self) -> None:
         try:
-            # Attempt to close any open files if not already closed
-            if self._file_handle is not None or self._sigmf is not None:
-                self.close()
+            self.close()
         except Exception:
-            # Silently ignore errors during cleanup
             pass

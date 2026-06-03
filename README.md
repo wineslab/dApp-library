@@ -17,9 +17,40 @@ The dApp can be found in the `examples` directory or it can be downloaded from t
 Clone the repository and install it manually with:
 
 ```
-hatch build
+pip3 install -e ".[all]"
+```
+
+Building a distributable sdist / wheel:
+
+```
+pip install build
+python -m build         # produces dist/*.tar.gz and dist/*.whl
 pip3 install "dist/*.tar.gz[all]"
 ```
+
+The wheel build uses [scikit-build-core](https://scikit-build-core.readthedocs.io/) to compile the bundled C++ extension (see *libiqsaver* below). System prerequisites: a C++17 compiler, CMake ≥ 3.16, SWIG ≥ 4.0, and [`nlohmann/json`](https://github.com/nlohmann/json) (≥ 3.11). On Debian/Ubuntu: `apt install cmake swig nlohmann-json3-dev`.
+
+### libiqsaver — standalone C++ library
+
+The `iq_saver` Python package wraps **libiqsaver**, a SigMF-compliant IQ-sample writer written in C++. The same library is also usable directly from C++ projects. To install it system-wide:
+
+```
+cd libiqsaver
+mkdir build && cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release
+sudo make install
+```
+
+After install:
+
+```
+pkg-config --cflags --libs libiqsaver
+# or, in CMake:
+find_package(libiqsaver REQUIRED)
+target_link_libraries(my_app PRIVATE iqsaver::iqsaver)
+```
+
+The standalone install (headers under `${CMAKE_INSTALL_PREFIX}/include/iqsaver`, library and pkg-config under `${CMAKE_INSTALL_LIBDIR}`) is independent of `pip install dapps` — both can coexist on the same machine.
 
 ### Launch the Spectrum Sharing dApp example
 

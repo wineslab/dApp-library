@@ -1,0 +1,10 @@
+#pragma once
+
+namespace iqsaver {
+
+constexpr const char* kVersion = "@LIBIQSAVER_VERSION@";
+constexpr int kVersionMajor = @LIBIQSAVER_VERSION_MAJOR@;
+constexpr int kVersionMinor = @LIBIQSAVER_VERSION_MINOR@;
+constexpr int kVersionPatch = @LIBIQSAVER_VERSION_PATCH@;
+
+}  // namespace iqsaver

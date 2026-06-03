@@ -49,10 +49,10 @@ The following are **mandatory** for every contribution. PRs that do not meet the
 
 - All PRs must use `.github/PULL_REQUEST_TEMPLATE.md` and complete every checklist item.
 - The following CI workflow must be green on the latest commit before review:
-  - **`Run tests`** (`.github/workflows/test.yml`) — runs `hatch run pytest tests/ -v` on Python 3.12.
+  - **`Run tests`** (`.github/workflows/test.yml`) — installs the package via `pip install -e ".[all]"` and runs `pytest tests/ -v` on Python 3.12.
 - The following local checks must be reported in the PR description as run by the contributor (mirroring CI):
-  - `hatch run pytest tests/ -v` passes.
-  - `hatch build` succeeds.
+  - `pytest tests/ -v` passes (after `pip install -e ".[all]"`).
+  - `python -m build` succeeds (the build backend is scikit-build-core; this also verifies the C++/SWIG extension compiles).
   - `VERSION` file bumped per [SemVer](https://semver.org/) when public API or wire protocol changes.
   - `README.md` and/or `CONTRIBUTING.md` updated when contributor- or user-facing behavior changes.
 

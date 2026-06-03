@@ -63,7 +63,7 @@ The detector flags any PRB whose power exceeds a fixed absolute threshold.
 
 **Interactive:**
 ```bash
-hatch run python examples/spectrum_dapp.py \
+python3 examples/spectrum_dapp.py \
   --link zmq --transport ipc \
   --save-iqs \
   --control \
@@ -77,7 +77,7 @@ hatch run python examples/spectrum_dapp.py \
 
 **CI/CD:**
 ```bash
-hatch run python examples/spectrum_dapp.py \
+python3 examples/spectrum_dapp.py \
   --link zmq --transport ipc \
   --save-iqs \
   --control \
@@ -96,7 +96,7 @@ after the last detection before being released.
 
 **Interactive:**
 ```bash
-hatch run python examples/spectrum_dapp.py \
+python3 examples/spectrum_dapp.py \
   --link zmq --transport ipc \
   --save-iqs \
   --control \
@@ -112,7 +112,7 @@ hatch run python examples/spectrum_dapp.py \
 
 **CI/CD:**
 ```bash
-hatch run python examples/spectrum_dapp.py \
+python3 examples/spectrum_dapp.py \
   --link zmq --transport ipc \
   --save-iqs \
   --control \
