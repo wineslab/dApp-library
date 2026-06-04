@@ -314,9 +314,15 @@ struct IQSaverWriter::Impl {
                           std::optional<double> timestamp) {
         double ts = timestamp.value_or(now_seconds());
 
-        // Rotation check (mirrors Python if/elif at iq_saver.py:244-250)
+        // Rotation check. max_samples_per_file is a count of true IQ *samples*,
+        // so it is compared against iq_sample_count — NOT frame_count, which
+        // counts save_samples() calls. The check runs before the write so each
+        // call's samples stay whole within one segment; a segment therefore
+        // reaches *at least* max_samples_per_file and may exceed it by up to one
+        // call's worth of samples. It is a rotation threshold, not a hard cap —
+        // splitting a single call across files would fragment an indication.
         if (config.max_samples_per_file.has_value() &&
-            frame_count >= *config.max_samples_per_file) {
+            iq_sample_count >= *config.max_samples_per_file) {
             rotate_file(ts);
         } else if (config.rotation_interval.has_value() &&
                    file_start_time.has_value() &&

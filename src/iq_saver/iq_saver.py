@@ -24,6 +24,33 @@ __author__ = "Andrea Lacava"
 # extra metadata to the C++ writer — they map to dedicated C++ fields.
 _RESERVED_GLOBAL_KWARGS = {"sampling_threshold"}
 
+# SigMF datatype string -> bytes per complex sample. The on-disk byte layout the
+# writer produces MUST match the declared ``core:datatype`` so that
+# ``bytes_on_disk == num_samples * bytes_per_sample`` holds (spear-lake seal-time
+# invariant 14). int16-interleaved I/Q is 4 bytes/sample; float32-interleaved is 8.
+# Only little-endian formats are supported: the writer streams native-endian numpy
+# buffers straight to disk and does NOT byte-swap, so declaring a big-endian
+# datatype would mis-describe the on-disk bytes on a little-endian host.
+_DTYPE_BYTES_PER_SAMPLE = {
+    "ci16_le": 4,
+    "cf32_le": 8,
+}
+# Datatypes whose on-disk element is a raw int16 I/Q pair (no conversion).
+_INT16_DTYPES = {"ci16_le"}
+# Datatypes whose on-disk element is a float32 I/Q pair (complex64 bytes).
+_FLOAT32_DTYPES = {"cf32_le"}
+
+
+def bytes_per_sample(dtype: str) -> int:
+    """Bytes occupied by one complex sample for a SigMF datatype string."""
+    try:
+        return _DTYPE_BYTES_PER_SAMPLE[dtype]
+    except KeyError:
+        raise ValueError(
+            f"Unsupported SigMF datatype {dtype!r}. "
+            f"Supported: {sorted(_DTYPE_BYTES_PER_SAMPLE)}"
+        ) from None
+
 
 def _to_jsonable(value: Any) -> Any:
     """Convert numpy arrays/scalars into JSON-friendly Python primitives."""
@@ -67,6 +94,8 @@ class IQSaver:
         self.center_freq = float(center_freq)
         self.bandwidth = float(bandwidth) if bandwidth else 0.0
         self.sample_rate = float(sample_rate) if sample_rate else self.bandwidth
+        # Validates dtype up front and exposes bytes-per-sample for callers/tests.
+        self.bytes_per_sample = bytes_per_sample(dtype)
         self.dtype = dtype
         self.annotation_flush_interval = annotation_flush_interval
         self.author = author
@@ -119,21 +148,52 @@ class IQSaver:
             raise TypeError(
                 f"iq_data must be a numpy array, got {type(iq_data)!r}")
 
-        if iq_data.dtype == np.complex64:
-            write_data = np.ascontiguousarray(iq_data)
-            num_samples = len(write_data)
-        elif iq_data.dtype == np.complex128:
-            write_data = np.ascontiguousarray(iq_data.astype(np.complex64))
+        # The on-disk byte layout produced here MUST match the declared
+        # ``core:datatype`` (self.dtype) — otherwise the SigMF metadata lies about
+        # the sample size and spear-lake invariant 14 fails at seal time.
+        # We therefore refuse to silently convert across incompatible widths:
+        # the data kind and the declared dtype must agree.
+        if iq_data.dtype in (np.complex64, np.complex128):
+            if self.dtype not in _FLOAT32_DTYPES:
+                raise ValueError(
+                    f"complex IQ data is written as 8-byte cf32 samples but "
+                    f"core:datatype is {self.dtype!r}. Construct IQSaver with "
+                    f"dtype='cf32_le' for complex64/complex128 input.")
+            # Already-complex64 input only needs a contiguity check (no-op when
+            # contiguous); only complex128 needs the narrowing copy. Avoids an
+            # unconditional astype copy on the hot path.
+            if iq_data.dtype == np.complex64:
+                write_data = np.ascontiguousarray(iq_data)
+            else:
+                write_data = np.ascontiguousarray(iq_data.astype(np.complex64))
             num_samples = len(write_data)
         elif iq_data.dtype == np.int16:
-            if self.dtype == "ci16_le":
+            if len(iq_data) % 2 != 0:
+                # Interleaved I/Q must have an even element count. An odd length
+                # would write all bytes but count floor(n/2) samples, desyncing
+                # iq_sample_count from the bytes on disk (breaking indexing and
+                # sample-count rotation).
+                raise ValueError(
+                    f"int16 IQ data must have an even (interleaved I/Q) length, "
+                    f"got {len(iq_data)}.")
+            if self.dtype in _INT16_DTYPES:
+                # Raw int16 I/Q pairs straight to disk — bytes match ci16_le.
                 write_data = np.ascontiguousarray(iq_data)
                 num_samples = len(write_data) // 2
+            elif self.dtype in _FLOAT32_DTYPES:
+                # Explicit, declared int16 -> complex64 conversion — bytes match cf32_le.
+                # Build complex64 directly (assigning to .real/.imag casts int16 ->
+                # float32 in place) to avoid the complex128 intermediate that
+                # `f32 + 1j*f32` would allocate on every write.
+                num_samples = len(iq_data) // 2
+                write_data = np.empty(num_samples, dtype=np.complex64)
+                write_data.real = iq_data[::2]
+                write_data.imag = iq_data[1::2]
             else:
-                iq_complex = (iq_data[::2].astype(np.float32) +
-                              1j * iq_data[1::2].astype(np.float32))
-                write_data = np.ascontiguousarray(iq_complex.astype(np.complex64))
-                num_samples = len(write_data)
+                raise ValueError(
+                    f"int16 IQ data cannot be written as core:datatype "
+                    f"{self.dtype!r}. Use dtype='ci16_le' (raw passthrough) or "
+                    f"dtype='cf32_le' (explicit float conversion).")
         else:
             raise ValueError(
                 f"Unsupported data type: {iq_data.dtype}. "

@@ -106,6 +106,7 @@ def main(args):
         e_sampling=args.e,
         num_subcarrier_spacing=args.num_subcarrier_spacing,
         sampling_threshold=args.sampling_threshold,
+        max_samples_per_file=args.max_samples_per_file,
         ground_truth=args.ground_truth,
         show_controls=args.show_controls,
         dapp_name="SpectrumSharing",
@@ -205,6 +206,13 @@ if __name__ == "__main__":
                         help="Samples to retain after CNN energy peak detection")
     parser.add_argument('--sampling-threshold', type=int, default=5,
                         help="Render a new dashboard frame every N IQ batches (visualization only, does not affect IQ delivery or recording)")
+    parser.add_argument('--max-samples-per-file', type=int, default=46_080_000,
+                        help="Rotate the SigMF capture file once a segment reaches "
+                             "this many true IQ samples (default 46080000). Each "
+                             "indication is kept whole, so a segment may exceed the "
+                             "threshold by up to one indication's worth of samples. "
+                             "Segment wall-clock duration depends on the capture rate. "
+                             "Only used with --save-iqs.")
     parser.add_argument('--ground-truth', type=str, default='', metavar='LABEL',
                         help="Initial ground truth label written into IQ annotations "
                              "(only used with --save-iqs). "

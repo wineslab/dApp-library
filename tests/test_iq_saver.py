@@ -30,6 +30,7 @@ def test_basic_recording():
             sample_rate=38.16e6,
             rotation_interval=10.0,
             hw_info='Test RU - USRP B210',
+            dtype='cf32_le',
             num_prbs=106,
             fft_size=2048
         )
@@ -65,9 +66,10 @@ def test_annotations():
             base_path=tmpdir,
             center_freq=3.6192e9,
             bandwidth=38.16e6,
+            dtype='cf32_le',
             num_prbs=106
         )
-        
+
         # Save samples
         samples = (np.random.randn(1536) + 1j * np.random.randn(1536)) * 1000
         ts = time.time()
@@ -126,6 +128,7 @@ def test_file_rotation():
             center_freq=3.6192e9,
             bandwidth=38.16e6,
             rotation_interval=0.5,  # Rotate every 500ms
+            dtype='cf32_le',
             num_prbs=106
         )
         
@@ -163,6 +166,7 @@ def test_sigmf_compliance():
             sample_rate=38.16e6,
             rotation_interval=10.0,
             hw_info='Test RU - USRP B210',
+            dtype='cf32_le',
             num_prbs=106,
             fft_size=2048,
             subcarrier_spacing_khz=30
@@ -196,8 +200,8 @@ def test_sigmf_compliance():
         # Verify global metadata
         global_info = recording.get_global_info()
         assert global_info.get('core:sample_rate') == 38.16e6, f"Sample rate mismatch: {global_info.get('core:sample_rate')}"
-        # Note: default dtype is cf32_le, but we're using ci16_le in IQSaver
-        # assert global_info.get('core:datatype') == 'cf32_le'
+        # complex64 samples are written as cf32_le, and core:datatype must say so.
+        assert global_info.get('core:datatype') == 'cf32_le', f"datatype mismatch: {global_info.get('core:datatype')}"
         assert global_info.get('spear:num_prbs') == 106, f"num_prbs mismatch: {global_info.get('spear:num_prbs')}"
         assert global_info.get('spear:fft_size') == 2048, f"fft_size mismatch: {global_info.get('spear:fft_size')}"
         
@@ -245,6 +249,7 @@ def test_context_manager():
             base_path=tmpdir,
             center_freq=3.6192e9,
             bandwidth=38.16e6,
+            dtype='cf32_le',
             num_prbs=106
         ) as saver:
             samples = (np.random.randn(2048) + 1j * np.random.randn(2048)) * 1000
@@ -281,6 +286,7 @@ def test_deferred_annotations():
             center_freq=3.6192e9,
             bandwidth=38.16e6,
             rotation_interval=0.5,
+            dtype='cf32_le',
             num_prbs=106
         )
         
@@ -342,6 +348,7 @@ def test_spectrum_dapp_integration_pattern():
             annotation_flush_interval=200,
             hw_info=f"FFT:2048, PRBs:{num_prbs}",
             description="5G NR Spectrum Sharing - RAN Function 1",
+            dtype='cf32_le',
             fft_size=2048,
             num_prbs=num_prbs,
             subcarrier_spacing_khz=num_subcarrier_spacing,
@@ -405,6 +412,7 @@ def test_metadata_accumulation_across_flushes():
             center_freq=3.6192e9,
             bandwidth=38.16e6,
             annotation_flush_interval=200,  # manual flush only
+            dtype='cf32_le',
             num_prbs=106
         )
 
@@ -448,11 +456,187 @@ def test_metadata_accumulation_across_flushes():
         print("✓ Test 8 PASSED\n")
 
 
+def _data_file_size(tmpdir, index=0):
+    """Byte size of the index-th (sorted) .sigmf-data file in tmpdir."""
+    data_files = sorted(Path(tmpdir).glob('*.sigmf-data'))
+    return data_files[index].stat().st_size, data_files
+
+
+def test_dtype_byte_consistency():
+    """On-disk byte count must equal num_samples * bytes_per_sample(core:datatype).
+
+    This is exactly the spear-lake seal-time invariant: the SigMF datatype
+    declaration must not lie about the on-disk sample size.
+    """
+    print("=" * 80)
+    print("Test 9: dtype / on-disk byte consistency")
+    print("=" * 80)
+
+    from iq_saver.iq_saver import bytes_per_sample
+
+    # int16 raw passthrough -> ci16_le (4 bytes/sample)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        n = 1536
+        saver = IQSaver(base_path=tmpdir, center_freq=3.6192e9,
+                        bandwidth=38.16e6, dtype='ci16_le', num_prbs=106)
+        iq_arr = np.random.randint(-1000, 1000, size=n * 2, dtype=np.int16)
+        saver.save_samples(iq_arr)
+        saver.close()
+        size, _ = _data_file_size(tmpdir)
+        assert size == n * bytes_per_sample('ci16_le'), \
+            f"ci16_le: {size} != {n * 4}"
+        with open(sorted(Path(tmpdir).glob('*.sigmf-meta'))[0]) as f:
+            meta = json.load(f)
+        assert meta['global']['core:datatype'] == 'ci16_le'
+        print(f"✓ ci16_le: {size} bytes == {n} samples * 4")
+
+    # complex64 -> cf32_le (8 bytes/sample)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        n = 1024
+        saver = IQSaver(base_path=tmpdir, center_freq=3.6192e9,
+                        bandwidth=38.16e6, dtype='cf32_le', num_prbs=106)
+        samples = (np.random.randn(n) + 1j * np.random.randn(n)).astype(np.complex64)
+        saver.save_samples(samples)
+        saver.close()
+        size, _ = _data_file_size(tmpdir)
+        assert size == n * bytes_per_sample('cf32_le'), \
+            f"cf32_le: {size} != {n * 8}"
+        print(f"✓ cf32_le: {size} bytes == {n} samples * 8")
+
+    print("✓ Test 9 PASSED\n")
+
+
+def test_dtype_mismatch_raises():
+    """Feeding data whose width disagrees with core:datatype must raise."""
+    print("=" * 80)
+    print("Test 10: dtype / data mismatch is rejected")
+    print("=" * 80)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # complex64 data declared as ci16_le would write 8-byte samples while
+        # metadata claims 4 — must be refused, not silently mis-declared.
+        saver = IQSaver(base_path=tmpdir, center_freq=3.6192e9,
+                        bandwidth=38.16e6, dtype='ci16_le', num_prbs=106)
+        samples = (np.random.randn(64) + 1j * np.random.randn(64)).astype(np.complex64)
+        try:
+            saver.save_samples(samples)
+            assert False, "Expected ValueError for complex64 + ci16_le"
+        except ValueError:
+            print("✓ complex64 + ci16_le rejected")
+        finally:
+            saver.close()
+
+    # Odd-length int16 (not valid interleaved I/Q) rejected — would desync the
+    # sample counter from the bytes written.
+    with tempfile.TemporaryDirectory() as tmpdir:
+        saver = IQSaver(base_path=tmpdir, center_freq=3.6192e9,
+                        bandwidth=38.16e6, dtype='ci16_le', num_prbs=106)
+        try:
+            saver.save_samples(np.arange(7, dtype=np.int16))
+            assert False, "Expected ValueError for odd-length int16"
+        except ValueError:
+            print("✓ odd-length int16 rejected")
+        finally:
+            saver.close()
+
+    # Unknown datatype rejected at construction.
+    with tempfile.TemporaryDirectory() as tmpdir:
+        try:
+            IQSaver(base_path=tmpdir, dtype='bogus_le')
+            assert False, "Expected ValueError for unknown dtype"
+        except ValueError:
+            print("✓ unknown datatype rejected at construction")
+
+    # Big-endian datatypes are not supported (no byte-swap on the write path).
+    with tempfile.TemporaryDirectory() as tmpdir:
+        try:
+            IQSaver(base_path=tmpdir, dtype='cf32_be')
+            assert False, "Expected ValueError for big-endian dtype"
+        except ValueError:
+            print("✓ big-endian datatype rejected at construction")
+
+    print("✓ Test 10 PASSED\n")
+
+
+def test_effective_sample_rate_fields_emitted():
+    """spear:average_over_frames and spear:effective_sample_rate land in global."""
+    print("=" * 80)
+    print("Test 11: effective sample-rate metadata in global")
+    print("=" * 80)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        saver = IQSaver(base_path=tmpdir, center_freq=3.6192e9,
+                        bandwidth=38.16e6, sample_rate=100.0, dtype='cf32_le',
+                        num_prbs=106, average_over_frames=4,
+                        effective_sample_rate=25.0)
+        saver.save_samples((np.random.randn(64) + 1j * np.random.randn(64)).astype(np.complex64))
+        saver.close()
+
+        with open(sorted(Path(tmpdir).glob('*.sigmf-meta'))[0]) as f:
+            meta = json.load(f)
+        g = meta['global']
+        assert g.get('spear:average_over_frames') == 4, g.get('spear:average_over_frames')
+        assert g.get('spear:effective_sample_rate') == 25.0, g.get('spear:effective_sample_rate')
+        print("✓ spear:average_over_frames and spear:effective_sample_rate present")
+        print("✓ Test 11 PASSED\n")
+
+
+def test_rotation_by_sample_count():
+    """Rotation triggers on true IQ sample count, not on save_samples call count."""
+    print("=" * 80)
+    print("Test 12: rotation by sample count")
+    print("=" * 80)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        per_call = 1024
+        saver = IQSaver(base_path=tmpdir, center_freq=3.6192e9,
+                        bandwidth=38.16e6, dtype='cf32_le', num_prbs=106,
+                        max_samples_per_file=2000)
+        for _ in range(3):
+            samples = (np.random.randn(per_call) + 1j * np.random.randn(per_call)).astype(np.complex64)
+            saver.save_samples(samples)
+        saver.close()
+
+        size0, data_files = _data_file_size(tmpdir, index=0)
+        # First segment fills past the 2000-sample threshold (2 calls = 2048),
+        # then rotates — so it holds exactly 2048 samples regardless of the fact
+        # that only 2 of the 3 save_samples() calls landed in it.
+        assert len(data_files) == 2, f"Expected 2 segments, got {len(data_files)}"
+        assert size0 == 2 * per_call * 8, f"First segment {size0} != {2 * per_call * 8}"
+        print(f"✓ Rotated into {len(data_files)} segments; first holds 2048 samples")
+        print("✓ Test 12 PASSED\n")
+
+
+def test_annotation_averaging_shift():
+    """Annotation start index is shifted back to the first frame of the window."""
+    print("=" * 80)
+    print("Test 13: annotation averaging-delay correction")
+    print("=" * 80)
+
+    from spectrum.spectrum_dapp import SpectrumSharingDApp as S
+
+    # sample_idx is the *start* index of the most recent indication, i.e.
+    # (N-1) * samples_per_indication. With 1000 samples/indication:
+    #
+    # First 64-frame window (frames 0..63): the last frame starts at 63*1000 =
+    # 63000, and the correction must point back to frame 0 -> 0.
+    assert S._corrected_annotation_start(63000, 64, 1000) == 0
+    # Second window (frames 64..127): last frame starts at 127*1000 = 127000,
+    # correction points back to frame 64 -> 64000.
+    assert S._corrected_annotation_start(127000, 64, 1000) == 64000
+    # No averaging (window 1) leaves the index untouched.
+    assert S._corrected_annotation_start(5000, 1, 1000) == 5000
+    # Clamped at zero when the window reaches before the start of the recording.
+    assert S._corrected_annotation_start(500, 64, 1000) == 0
+    print("✓ window=64 -> back-shifted; window=1 -> unchanged; clamped at 0")
+    print("✓ Test 13 PASSED\n")
+
+
 if __name__ == "__main__":
     print("\n" + "=" * 80)
     print("IQSaver Test Suite")
     print("=" * 80 + "\n")
-    
+
     tests = [
         test_basic_recording,
         test_annotations,
@@ -462,6 +646,11 @@ if __name__ == "__main__":
         test_deferred_annotations,
         test_spectrum_dapp_integration_pattern,
         test_metadata_accumulation_across_flushes,
+        test_dtype_byte_consistency,
+        test_dtype_mismatch_raises,
+        test_effective_sample_rate_fields_emitted,
+        test_rotation_by_sample_count,
+        test_annotation_averaging_shift,
     ]
     
     passed = 0

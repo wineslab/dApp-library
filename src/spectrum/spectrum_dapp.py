@@ -27,6 +27,12 @@ from spectrum.threshold_detector import (
 )
 
 
+# Version of the spear-lake `spear:` SigMF field list this dApp targets, emitted
+# as spear:schema_version in the SigMF global block. Co-versioned with
+# spear-lake/docs/SPEAR_SIGMF_FIELDS.yml.
+SPEAR_SIGMF_SCHEMA_VERSION = "1.1.0"
+
+
 def compute_fft_size(num_prbs: int, e_sampling: bool = False) -> int:
     """Compute the FFT size for a given PRB count and sampling mode.
 
@@ -83,7 +89,8 @@ class SpectrumSharingDApp(DApp):
                  center_freq: float = 3.6192e9, num_prbs: int = 106,
                  num_subcarrier_spacing: int = 30,
                  e_sampling: bool = False, encoding_method: str = "asn1",
-                 sampling_threshold: int = 5, **kwargs):
+                 sampling_threshold: int = 5,
+                 max_samples_per_file: int = 46_080_000, **kwargs):
         super().__init__(dapp_name=dapp_name, dapp_version=dapp_version, vendor=vendor,
                          e3ap_protocol_version=e3ap_protocol_version, link=link,
                          transport=transport, encoding_method=encoding_method, **kwargs)
@@ -109,6 +116,8 @@ class SpectrumSharingDApp(DApp):
         self.prb_thrs = 75
         self.save_iqs = save_iqs
         self.sampling_threshold = sampling_threshold
+        # IQ capture files rotate every `max_samples_per_file` true IQ samples.
+        self.max_samples_per_file = max_samples_per_file
 
         # Detection strategy
         if detector is None:
@@ -127,11 +136,25 @@ class SpectrumSharingDApp(DApp):
         # IQ recording
         if self.save_iqs:
             from iq_saver.iq_saver import IQSaver
-            # This sample_rate needs to be dicussed
-            # It might make sense to calculate effective sample rate based on sampling_threshold
-            # Each capture is: 10ms * sampling_threshold
-            sample_rate = 100  # Hz: sensing done once every 10 ms
-            dapp_logger.info(f"Sensing sample rate: {sample_rate:.2f} Hz (each sensing is 10 ms)")
+            # Nominal capture rate of the on-disk IQ: each indication carries one
+            # OFDM symbol of fft_size time-domain samples taken at the gNB ADC rate,
+            # which is fft_size * subcarrier_spacing. This is core:sample_rate per
+            # the SigMF spec (the rate of the bytes actually on disk), NOT the
+            # ~100 Hz sensing cadence at which indications arrive.
+            sample_rate = self.fft_size * self.num_subcarrier_spacing * 1e3
+            dapp_logger.info(f"Nominal IQ capture rate: {sample_rate / 1e6:.3f} Msps")
+            # Detector decision window. The static detector averages `window` frames
+            # before each PRB decision; the adaptive detector decides per frame. This
+            # is recorded as spear:average_over_frames and drives the annotation-time
+            # compensation (see _corrected_annotation_start).
+            if isinstance(self._detector, StaticThresholdDetector):
+                average_over_frames = self._detector.window
+            else:
+                average_over_frames = 1
+            # The dApp writes raw, undecimated IQ, so the true on-disk sample rate
+            # equals the nominal rate. effective_sample_rate would only drop below
+            # core:sample_rate if the writer decimated on-device, which it does not.
+            effective_sample_rate = sample_rate
             self.iq_saver = IQSaver(
                 base_path=LOG_DIR,
                 center_freq=self.center_freq,
@@ -150,11 +173,10 @@ class SpectrumSharingDApp(DApp):
                 num_prbs=self.num_prbs,
                 subcarrier_spacing_khz=self.num_subcarrier_spacing,
                 sampling_threshold=self.sampling_threshold,
-                max_samples_per_file=2000,
-                average_over_frames=(
-                    self._detector.window
-                    if isinstance(self._detector, StaticThresholdDetector) else None
-                )
+                max_samples_per_file=self.max_samples_per_file,
+                average_over_frames=average_over_frames,
+                effective_sample_rate=effective_sample_rate,
+                schema_version=SPEAR_SIGMF_SCHEMA_VERSION,
             )
 
         self.control = control
@@ -391,6 +413,20 @@ class SpectrumSharingDApp(DApp):
     # ------------------------------------------------------------------
     # Detection helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _corrected_annotation_start(sample_idx: int, window: int,
+                                    samples_per_indication: int) -> int:
+        """IQ-sample index of the first frame contributing to a decision.
+
+        ``sample_idx`` is the start index of the most recent indication (the
+        last frame of the averaging window). A detector that averages ``window``
+        frames before deciding bases that decision on the preceding ``window``
+        indications, each carrying ``samples_per_indication`` true IQ samples, so
+        the annotation must point back to the first of them. ``window == 1`` (no
+        averaging) leaves the index unchanged. The result is clamped at 0.
+        """
+        return max(0, sample_idx - (window - 1) * samples_per_indication)
 
     def _compute_prb_blacklist(self, detected_prbs: np.ndarray) -> np.ndarray:
         """Compute the PRB subset sent in the control blacklist message.
@@ -692,9 +728,21 @@ class SpectrumSharingDApp(DApp):
                 with self._ground_truth_lock:
                     gt = self._ground_truth_label if detected_prbs.size > 0 else "no_rfi"
                 ann["ground_truth_label"] = gt
+            # Correct for the averaging delay: self.sample_idx is the IQ-sample
+            # index of the most recent indication (the last frame of the averaging
+            # window). A static detector's decision covers the preceding `window`
+            # indications, so the annotation must point back to the first frame of
+            # that window. The adaptive detector decides per indication (no window).
+            window = (
+                self._detector.window
+                if isinstance(self._detector, StaticThresholdDetector) else 1
+            )
             with self._sample_idx_lock:
                 if self.sample_idx is not None:
-                    self.iq_saver.add_annotation(start_sample=self.sample_idx, **ann)
+                    corrected_start = self._corrected_annotation_start(
+                        self.sample_idx, window, sample_count
+                    )
+                    self.iq_saver.add_annotation(start_sample=corrected_start, **ann)
 
         # Dashboard shows all detected PRBs; zone overlays (when control is active) visually
         # distinguish the protected region from the region sent in the control message.
