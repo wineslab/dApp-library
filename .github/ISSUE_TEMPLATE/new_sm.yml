@@ -77,7 +77,7 @@ body:
     id: paired_issue
     attributes:
       label: Paired libe3 issue / PR (if any)
-      placeholder: "wineslab/dApp-libe3#123"
+      placeholder: "wineslab/libe3#123"
     validations:
       required: false
 

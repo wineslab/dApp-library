@@ -58,7 +58,7 @@ The following are **mandatory** for every contribution. PRs that do not meet the
 
 ### Service Models and twin-repo coordination
 
-This repository is part of a framework that includes [`libe3`](https://github.com/wineslab/dApp-libe3) (the gNB-side E3 agent) and [`dApp-openairinterface5g`](https://github.com/wineslab/dApp-openairinterface5g) (the OAI fork). PRs that change the E3 wire protocol or add a new Service Model must come with a paired PR in the affected twin repo, linked from the PR description.
+This repository is part of a framework that includes [`libe3`](https://github.com/wineslab/libe3) (the gNB-side E3 agent) and [`dApp-openairinterface5g`](https://github.com/wineslab/dApp-openairinterface5g) (the OAI fork). PRs that change the E3 wire protocol or add a new Service Model must come with a paired PR in the affected twin repo, linked from the PR description.
 
 ## Code of Conduct
 

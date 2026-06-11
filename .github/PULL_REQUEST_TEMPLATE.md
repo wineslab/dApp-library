@@ -43,7 +43,7 @@ These mirror what CI (`.github/workflows/test.yml`) enforces. **All boxes must b
 
 ## Twin-repo coordination
 
-dapps is paired with [`libe3`](https://github.com/wineslab/dApp-libe3) and [`dApp-openairinterface5g`](https://github.com/wineslab/dApp-openairinterface5g). Breaking changes to the twin repos are not accepted.
+dapps is paired with [`libe3`](https://github.com/wineslab/libe3) and [`dApp-openairinterface5g`](https://github.com/wineslab/dApp-openairinterface5g). Breaking changes to the twin repos are not accepted.
 
 - [ ] This PR does not break the E3 wire protocol, OR a paired PR exists in the affected twin repo (link below).
 
