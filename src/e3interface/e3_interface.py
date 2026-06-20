@@ -28,6 +28,9 @@ class E3Interface:
             self.indication_callbacks = {}   # key: (dAppId, subscriptionId) -> list(callbacks)
             self.subscription_callbacks = {} # key: dAppId -> list(callbacks)
             self.xapp_control_callbacks = {} # key: dAppId -> list(callbacks)
+            # Guards the three callback dicts above: caller-thread add_/remove_*
+            # vs. inbound-thread iteration in the _handle_* dispatchers.
+            self._callback_lock = threading.Lock()
             self.stop_event = threading.Event()
             self.initialized = True
 
@@ -257,9 +260,9 @@ class E3Interface:
 
     def _handle_subscription_response(self, data):
         dapp_id = data['dAppIdentifier']
-        e3_logger.debug(f"DApp ID requested {dapp_id}, map status {self.subscription_callbacks}")
-            
-        callbacks = self.subscription_callbacks.get(dapp_id, [])
+        with self._callback_lock:
+            e3_logger.debug(f"DApp ID requested {dapp_id}, map status {self.subscription_callbacks}")
+            callbacks = list(self.subscription_callbacks.get(dapp_id, []))
         if callbacks:
             e3_logger.debug(f"Launch {len(callbacks)} subscription callback(s) for dApp {dapp_id}")
             for callback in callbacks:
@@ -268,13 +271,17 @@ class E3Interface:
             e3_logger.warning(f"No subscription callback registered for dApp {dapp_id}")
 
     def _handle_indication_data(self, dapp_identifier, data):
-        matched_keys = [key for key in self.indication_callbacks if key[0] == dapp_identifier]
-        if matched_keys:
-            total_callbacks = sum(len(self.indication_callbacks[key]) for key in matched_keys)
-            e3_logger.debug(f"Launch {total_callbacks} callback(s) for dApp {dapp_identifier}")
-            for key in matched_keys:
-                for callback in self.indication_callbacks[key]:
-                    callback(dapp_identifier, data)
+        with self._callback_lock:
+            callbacks = [
+                callback
+                for key, cbs in self.indication_callbacks.items()
+                if key[0] == dapp_identifier
+                for callback in cbs
+            ]
+        if callbacks:
+            e3_logger.debug(f"Launch {len(callbacks)} callback(s) for dApp {dapp_identifier}")
+            for callback in callbacks:
+                callback(dapp_identifier, data)
         else:
             e3_logger.warning(f"No indication callback registered for dApp {dapp_identifier}")
 
@@ -289,7 +296,8 @@ class E3Interface:
             f"xAppControlAction payload (hex): {xapp_control_data.hex()}"
         )
 
-        callbacks = self.xapp_control_callbacks.get(dapp_identifier, [])
+        with self._callback_lock:
+            callbacks = list(self.xapp_control_callbacks.get(dapp_identifier, []))
         if callbacks:
             e3_logger.debug(f"Launch {len(callbacks)} xApp control callback(s) for dApp {dapp_identifier}")
             for callback in callbacks:
@@ -317,124 +325,129 @@ class E3Interface:
         }))
 
     def add_subscription_callback(self, dapp_id: int, callback):
-        if dapp_id not in self.subscription_callbacks:
-            e3_logger.debug(f"Add first subscription callback for dApp {dapp_id}")
-            self.subscription_callbacks[dapp_id] = [callback]
-        else:
-            callbacks = list(self.subscription_callbacks[dapp_id])
-            if callback not in callbacks:
-                e3_logger.debug(f"Add additional subscription callback for dApp {dapp_id}")
-                callbacks.append(callback)
-                self.subscription_callbacks[dapp_id] = callbacks
+        with self._callback_lock:
+            if dapp_id not in self.subscription_callbacks:
+                e3_logger.debug(f"Add first subscription callback for dApp {dapp_id}")
+                self.subscription_callbacks[dapp_id] = [callback]
             else:
-                e3_logger.warning(f"Subscription callback already registered for dApp {dapp_id}, skipping")
+                callbacks = list(self.subscription_callbacks[dapp_id])
+                if callback not in callbacks:
+                    e3_logger.debug(f"Add additional subscription callback for dApp {dapp_id}")
+                    callbacks.append(callback)
+                    self.subscription_callbacks[dapp_id] = callbacks
+                else:
+                    e3_logger.warning(f"Subscription callback already registered for dApp {dapp_id}, skipping")
 
 
     def remove_subscription_callback(self, dapp_id: int, callback=None):
-        if dapp_id in self.subscription_callbacks:
-            if callback is None:
-                e3_logger.debug(f"Remove all subscription callbacks for dApp {dapp_id}")
-                del self.subscription_callbacks[dapp_id]
-            else:
-                callbacks = list(self.subscription_callbacks[dapp_id])
-                if callback in callbacks:
-                    e3_logger.debug(f"Remove specific subscription callback for dApp {dapp_id}")
-                    callbacks.remove(callback)
-                    if callbacks:
-                        self.subscription_callbacks[dapp_id] = callbacks
-                    else:
-                        del self.subscription_callbacks[dapp_id]
+        with self._callback_lock:
+            if dapp_id in self.subscription_callbacks:
+                if callback is None:
+                    e3_logger.debug(f"Remove all subscription callbacks for dApp {dapp_id}")
+                    del self.subscription_callbacks[dapp_id]
                 else:
-                    e3_logger.warning(f"Specific subscription callback not found for dApp {dapp_id}")
-        else:
-            e3_logger.warning(f"No subscription callbacks found for dApp {dapp_id}")
+                    callbacks = list(self.subscription_callbacks[dapp_id])
+                    if callback in callbacks:
+                        e3_logger.debug(f"Remove specific subscription callback for dApp {dapp_id}")
+                        callbacks.remove(callback)
+                        if callbacks:
+                            self.subscription_callbacks[dapp_id] = callbacks
+                        else:
+                            del self.subscription_callbacks[dapp_id]
+                    else:
+                        e3_logger.warning(f"Specific subscription callback not found for dApp {dapp_id}")
+            else:
+                e3_logger.warning(f"No subscription callbacks found for dApp {dapp_id}")
 
     def add_indication_callback(self, dapp_id: int, subscription_id: int, callback):
         key = (dapp_id, subscription_id)
-
-        if key not in self.indication_callbacks:
-            e3_logger.debug(f"Add first indication callback for dApp {dapp_id}, subscription {subscription_id}")
-            self.indication_callbacks[key] = [callback]
-        else:
-            callbacks = list(self.indication_callbacks[key])
-            if callback not in callbacks:
-                e3_logger.debug(f"Add additional indication callback for dApp {dapp_id}, subscription {subscription_id}")
-                callbacks.append(callback)
-                self.indication_callbacks[key] = callbacks
+        with self._callback_lock:
+            if key not in self.indication_callbacks:
+                e3_logger.debug(f"Add first indication callback for dApp {dapp_id}, subscription {subscription_id}")
+                self.indication_callbacks[key] = [callback]
             else:
-                e3_logger.warning(
-                    f"Indication callback already registered for dApp {dapp_id}, subscription {subscription_id}, skipping"
-                )
+                callbacks = list(self.indication_callbacks[key])
+                if callback not in callbacks:
+                    e3_logger.debug(f"Add additional indication callback for dApp {dapp_id}, subscription {subscription_id}")
+                    callbacks.append(callback)
+                    self.indication_callbacks[key] = callbacks
+                else:
+                    e3_logger.warning(
+                        f"Indication callback already registered for dApp {dapp_id}, subscription {subscription_id}, skipping"
+                    )
 
     def remove_indication_callback(self, dapp_id: int, subscription_id: int | None = None, callback=None):
-        if subscription_id is None:
-            # Remove all entries for this dapp_id
-            keys_to_remove = [key for key in self.indication_callbacks if key[0] == dapp_id]
-            if keys_to_remove:
-                e3_logger.debug(f"Remove all indication callbacks for dApp {dapp_id}")
-                for key in keys_to_remove:
-                    del self.indication_callbacks[key]
-            else:
-                e3_logger.warning(f"No indication callbacks found for dApp {dapp_id}")
-
-        elif callback is not None:
-            # Remove specific callback from any key matching dapp_id
-            found = False
-            keys_to_check = [key for key in self.indication_callbacks if key[0] == dapp_id]
-            for key in keys_to_check:
-                callbacks = list(self.indication_callbacks[key])
-                if callback in callbacks:
-                    e3_logger.debug(f"Remove specific callback for dApp {dapp_id}, subscription {key[1]}")
-                    callbacks.remove(callback)
-                    if callbacks:
-                        self.indication_callbacks[key] = callbacks
-                    else:
+        with self._callback_lock:
+            if subscription_id is None:
+                # Remove all entries for this dapp_id
+                keys_to_remove = [key for key in self.indication_callbacks if key[0] == dapp_id]
+                if keys_to_remove:
+                    e3_logger.debug(f"Remove all indication callbacks for dApp {dapp_id}")
+                    for key in keys_to_remove:
                         del self.indication_callbacks[key]
-                    found = True
-                    break
-            if not found:
-                e3_logger.warning(f"Specific callback not found for dApp {dapp_id}")
+                else:
+                    e3_logger.warning(f"No indication callbacks found for dApp {dapp_id}")
 
-        else:
-            # subscription_id is present, callback is None: remove the specific key
-            key = (dapp_id, subscription_id)
-            if key in self.indication_callbacks:
-                e3_logger.debug(f"Remove all callbacks for dApp {dapp_id}, subscription {subscription_id}")
-                del self.indication_callbacks[key]
+            elif callback is not None:
+                # Remove specific callback from any key matching dapp_id
+                found = False
+                keys_to_check = [key for key in self.indication_callbacks if key[0] == dapp_id]
+                for key in keys_to_check:
+                    callbacks = list(self.indication_callbacks[key])
+                    if callback in callbacks:
+                        e3_logger.debug(f"Remove specific callback for dApp {dapp_id}, subscription {key[1]}")
+                        callbacks.remove(callback)
+                        if callbacks:
+                            self.indication_callbacks[key] = callbacks
+                        else:
+                            del self.indication_callbacks[key]
+                        found = True
+                        break
+                if not found:
+                    e3_logger.warning(f"Specific callback not found for dApp {dapp_id}")
+
             else:
-                e3_logger.warning(f"No indication callbacks found for dApp {dapp_id}, subscription {subscription_id}")
+                # subscription_id is present, callback is None: remove the specific key
+                key = (dapp_id, subscription_id)
+                if key in self.indication_callbacks:
+                    e3_logger.debug(f"Remove all callbacks for dApp {dapp_id}, subscription {subscription_id}")
+                    del self.indication_callbacks[key]
+                else:
+                    e3_logger.warning(f"No indication callbacks found for dApp {dapp_id}, subscription {subscription_id}")
 
     def add_xapp_control_callback(self, dapp_id: int, subscription_id: int, callback):
-        if dapp_id not in self.xapp_control_callbacks:
-            e3_logger.debug(f"Add first xApp control callback for dApp {dapp_id}")
-            self.xapp_control_callbacks[dapp_id] = [callback]
-        else:
-            callbacks = list(self.xapp_control_callbacks[dapp_id])
-            if callback not in callbacks:
-                e3_logger.debug(f"Add additional xApp control callback for dApp {dapp_id}")
-                callbacks.append(callback)
-                self.xapp_control_callbacks[dapp_id] = callbacks
-            else:
-                e3_logger.warning(f"xApp control callback already registered for dApp {dapp_id}, skipping")
-
-    def remove_xapp_control_callback(self, dapp_id: int, subscription_id: int | None = None,  callback=None):
-        if dapp_id in self.xapp_control_callbacks:
-            if callback is None:
-                e3_logger.debug(f"Remove all xApp control callbacks for dApp {dapp_id}")
-                del self.xapp_control_callbacks[dapp_id]
+        with self._callback_lock:
+            if dapp_id not in self.xapp_control_callbacks:
+                e3_logger.debug(f"Add first xApp control callback for dApp {dapp_id}")
+                self.xapp_control_callbacks[dapp_id] = [callback]
             else:
                 callbacks = list(self.xapp_control_callbacks[dapp_id])
-                if callback in callbacks:
-                    e3_logger.debug(f"Remove specific xApp control callback for dApp {dapp_id}")
-                    callbacks.remove(callback)
-                    if callbacks:
-                        self.xapp_control_callbacks[dapp_id] = callbacks
-                    else:
-                        del self.xapp_control_callbacks[dapp_id]
+                if callback not in callbacks:
+                    e3_logger.debug(f"Add additional xApp control callback for dApp {dapp_id}")
+                    callbacks.append(callback)
+                    self.xapp_control_callbacks[dapp_id] = callbacks
                 else:
-                    e3_logger.warning(f"Specific xApp control callback not found for dApp {dapp_id}")
-        else:
-            e3_logger.warning(f"No xApp control callbacks found for dApp {dapp_id}")
+                    e3_logger.warning(f"xApp control callback already registered for dApp {dapp_id}, skipping")
+
+    def remove_xapp_control_callback(self, dapp_id: int, subscription_id: int | None = None,  callback=None):
+        with self._callback_lock:
+            if dapp_id in self.xapp_control_callbacks:
+                if callback is None:
+                    e3_logger.debug(f"Remove all xApp control callbacks for dApp {dapp_id}")
+                    del self.xapp_control_callbacks[dapp_id]
+                else:
+                    callbacks = list(self.xapp_control_callbacks[dapp_id])
+                    if callback in callbacks:
+                        e3_logger.debug(f"Remove specific xApp control callback for dApp {dapp_id}")
+                        callbacks.remove(callback)
+                        if callbacks:
+                            self.xapp_control_callbacks[dapp_id] = callbacks
+                        else:
+                            del self.xapp_control_callbacks[dapp_id]
+                    else:
+                        e3_logger.warning(f"Specific xApp control callback not found for dApp {dapp_id}")
+            else:
+                e3_logger.warning(f"No xApp control callbacks found for dApp {dapp_id}")
 
 
     def _get_next_message_id(self):

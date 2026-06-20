@@ -153,9 +153,11 @@ class ZMQConnector(E3Connector):
         
 
     def setup_inbound_connection(self):
-        self.inbound_socket = self.context.socket(zmq.SUB)        
+        self.inbound_socket = self.context.socket(zmq.SUB)
         self.inbound_socket.setsockopt_string(zmq.SUBSCRIBE, "") # subscribe to all the messages
-        self.inbound_socket.setsockopt(zmq.CONFLATE, 1)  # Keep only last message
+        # HWM-bounded queue, not ZMQ_CONFLATE: CONFLATE keeps only the last
+        # message, so indications arriving while a slow callback runs are dropped.
+        self.inbound_socket.setsockopt(zmq.RCVHWM, 4096)
         self.inbound_socket.connect(self.inbound_endpoint)
 
         # Used only for test
@@ -178,7 +180,9 @@ class ZMQConnector(E3Connector):
 
     def setup_outbound_connection(self):
         self.outbound_socket = self.context.socket(zmq.PUB)
-        self.outbound_socket.setsockopt(zmq.CONFLATE, 1)  # Keep only last message in send queue; drops stale messages when HWM is reached
+        # HWM-bounded queue, not ZMQ_CONFLATE: each outbound message (control,
+        # report, subscription, release) is a distinct event, none are droppable.
+        self.outbound_socket.setsockopt(zmq.SNDHWM, 4096)
         self.outbound_socket.connect(self.outbound_endpoint)
     
     def send(self, payload: bytes):
