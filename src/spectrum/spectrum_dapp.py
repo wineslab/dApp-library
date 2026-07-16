@@ -27,10 +27,16 @@ from spectrum.threshold_detector import (
 )
 
 
-# Version of the spear-lake `spear:` SigMF field list this dApp targets, emitted
-# as spear:schema_version in the SigMF global block. Co-versioned with
-# spear-lake/docs/SPEAR_SIGMF_FIELDS.yml.
-SPEAR_SIGMF_SCHEMA_VERSION = "1.1.0"
+# Version of the spear-lake `dapp:` SigMF field list this dApp targets, emitted
+# as dapp:schema_version in the SigMF global block. Co-versioned with
+# spear-lake/docs/DAPP_SIGMF_FIELDS.yml (schema 1.0.0), which consolidated the
+# ecosystem on the single `dapp:` namespace and retired the legacy `spear:` one.
+DAPP_SIGMF_SCHEMA_VERSION = "1.0.0"
+
+# OFDM symbols per slot in 5G NR with normal cyclic prefix. Describes the time
+# axis of the underlying resource grid (dapp:n_symbols); the on-disk capture is
+# raw time-domain IQ, so this is RAN geometry, not an on-disk reshape dimension.
+NUM_OFDM_SYMBOLS_PER_SLOT = 14
 
 
 def compute_fft_size(num_prbs: int, e_sampling: bool = False) -> int:
@@ -145,7 +151,7 @@ class SpectrumSharingDApp(DApp):
             dapp_logger.info(f"Nominal IQ capture rate: {sample_rate / 1e6:.3f} Msps")
             # Detector decision window. The static detector averages `window` frames
             # before each PRB decision; the adaptive detector decides per frame. This
-            # is recorded as spear:average_over_frames and drives the annotation-time
+            # is recorded as dapp:average_over_frames and drives the annotation-time
             # compensation (see _corrected_annotation_start).
             if isinstance(self._detector, StaticThresholdDetector):
                 average_over_frames = self._detector.window
@@ -168,15 +174,27 @@ class SpectrumSharingDApp(DApp):
                     f" - detector: {type(self._detector).__name__}"
                     f" - threshold: {self._detector.threshold_db} dB"
                 ),
-                fft_size=self.fft_size,
                 dtype="ci16_le",
-                num_prbs=self.num_prbs,
+                # OFDM resource-grid geometry (spear-lake DAPP_SIGMF_FIELDS.yml,
+                # §6.5), emitted as component dims — a loader reconstructs the
+                # occupied bandwidth as n_prbs * n_sc_per_prb rather than reading
+                # a single fft_size. n_ants=1: the dApp captures one antenna
+                # stream. layout / samples_per_slot are intentionally omitted:
+                # they describe the on-disk interleaving of a *frequency-domain*
+                # resource grid (as emitted by the aerial post-FFT recorder), but
+                # this path writes raw time-domain IQ (fft_size samples/symbol),
+                # so that reshape does not apply and would misdescribe the bytes.
+                domain="time",
+                n_prbs=self.num_prbs,
+                n_sc_per_prb=self.num_consecutive_subcarriers_for_prb,
+                n_ants=1,
+                n_symbols=NUM_OFDM_SYMBOLS_PER_SLOT,
                 subcarrier_spacing_khz=self.num_subcarrier_spacing,
                 sampling_threshold=self.sampling_threshold,
                 max_samples_per_file=self.max_samples_per_file,
                 average_over_frames=average_over_frames,
                 effective_sample_rate=effective_sample_rate,
-                schema_version=SPEAR_SIGMF_SCHEMA_VERSION,
+                schema_version=DAPP_SIGMF_SCHEMA_VERSION,
             )
 
         self.control = control

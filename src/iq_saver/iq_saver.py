@@ -125,7 +125,11 @@ class IQSaver:
         cfg.rotation_interval = (
             -1.0 if rotation_interval is None else float(rotation_interval)
         )
-        cfg.extension_namespace = "spear"
+        # SPEAR's SigMF extension namespace. The ecosystem consolidated on the
+        # single `dapp:` namespace (spear-lake DAPP_SIGMF_FIELDS.yml, schema
+        # 1.0.0); the legacy `spear:` namespace is retired. All extra metadata
+        # kwargs are stamped under this prefix by the C++ writer.
+        cfg.extension_namespace = "dapp"
         cfg.extra_metadata_json = json.dumps(
             {k: _to_jsonable(v) for k, v in metadata_kwargs.items()}
         )

@@ -109,8 +109,8 @@ def test_annotations():
         
         # Check PRB control annotation
         prb_ann = next(a for a in annotations if a.get('core:label') == 'prb_control')
-        assert prb_ann.get('spear:prb_blacklist') == [76, 77, 78, 79, 80]
-        assert prb_ann.get('spear:noise_threshold') == 53
+        assert prb_ann.get('dapp:prb_blacklist') == [76, 77, 78, 79, 80]
+        assert prb_ann.get('dapp:noise_threshold') == 53
         
         print(f"✓ Verified {len(annotations)} annotations in metadata")
         print("✓ Test 2 PASSED\n")
@@ -202,8 +202,8 @@ def test_sigmf_compliance():
         assert global_info.get('core:sample_rate') == 38.16e6, f"Sample rate mismatch: {global_info.get('core:sample_rate')}"
         # complex64 samples are written as cf32_le, and core:datatype must say so.
         assert global_info.get('core:datatype') == 'cf32_le', f"datatype mismatch: {global_info.get('core:datatype')}"
-        assert global_info.get('spear:num_prbs') == 106, f"num_prbs mismatch: {global_info.get('spear:num_prbs')}"
-        assert global_info.get('spear:fft_size') == 2048, f"fft_size mismatch: {global_info.get('spear:fft_size')}"
+        assert global_info.get('dapp:num_prbs') == 106, f"num_prbs mismatch: {global_info.get('dapp:num_prbs')}"
+        assert global_info.get('dapp:fft_size') == 2048, f"fft_size mismatch: {global_info.get('dapp:fft_size')}"
         
         print(f"\nGlobal Metadata:")
         print(f"  Sample Rate: {global_info.get('core:sample_rate')} Hz")
@@ -227,12 +227,12 @@ def test_sigmf_compliance():
         
         ann = annotations[0]
         assert ann.get('core:label') == 'prb_control'
-        assert ann.get('spear:prb_blacklist') == [76, 77, 78, 79, 80]
+        assert ann.get('dapp:prb_blacklist') == [76, 77, 78, 79, 80]
         
         print(f"\nAnnotations: {len(annotations)}")
         print(f"  Label: {ann.get('core:label')}")
         print(f"  Comment: {ann.get('core:comment')}")
-        print(f"  Custom - PRB Blacklist: {ann.get('spear:prb_blacklist')}")
+        print(f"  Custom - PRB Blacklist: {ann.get('dapp:prb_blacklist')}")
         
         print(f"\n✓ All SigMF metadata is correctly formatted and compliant!")
         print("✓ Test 4 PASSED\n")
@@ -394,7 +394,7 @@ def test_spectrum_dapp_integration_pattern():
         for meta_file in meta_files:
             base = str(meta_file).replace('.sigmf-meta', '')
             recording = sigmf.fromfile(base)
-            assert recording.get_global_info().get('spear:num_prbs') == num_prbs
+            assert recording.get_global_info().get('dapp:num_prbs') == num_prbs
         
         print(f"✓ All recordings are valid SigMF files")
         print("✓ Test 7 PASSED\n")
@@ -559,7 +559,7 @@ def test_dtype_mismatch_raises():
 
 
 def test_effective_sample_rate_fields_emitted():
-    """spear:average_over_frames and spear:effective_sample_rate land in global."""
+    """dapp:average_over_frames and dapp:effective_sample_rate land in global."""
     print("=" * 80)
     print("Test 11: effective sample-rate metadata in global")
     print("=" * 80)
@@ -575,9 +575,9 @@ def test_effective_sample_rate_fields_emitted():
         with open(sorted(Path(tmpdir).glob('*.sigmf-meta'))[0]) as f:
             meta = json.load(f)
         g = meta['global']
-        assert g.get('spear:average_over_frames') == 4, g.get('spear:average_over_frames')
-        assert g.get('spear:effective_sample_rate') == 25.0, g.get('spear:effective_sample_rate')
-        print("✓ spear:average_over_frames and spear:effective_sample_rate present")
+        assert g.get('dapp:average_over_frames') == 4, g.get('dapp:average_over_frames')
+        assert g.get('dapp:effective_sample_rate') == 25.0, g.get('dapp:effective_sample_rate')
+        print("✓ dapp:average_over_frames and dapp:effective_sample_rate present")
         print("✓ Test 11 PASSED\n")
 
 
