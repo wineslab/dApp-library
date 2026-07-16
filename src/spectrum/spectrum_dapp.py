@@ -34,8 +34,9 @@ from spectrum.threshold_detector import (
 DAPP_SIGMF_SCHEMA_VERSION = "1.0.0"
 
 # OFDM symbols per slot in 5G NR with normal cyclic prefix. Describes the time
-# axis of the underlying resource grid (dapp:n_symbols); the on-disk capture is
-# raw time-domain IQ, so this is RAN geometry, not an on-disk reshape dimension.
+# axis of the underlying resource grid (dapp:n_symbols). The on-disk record is
+# one symbol's worth of frequency-domain FFT bins, so this is RAN geometry, not
+# an on-disk reshape dimension.
 NUM_OFDM_SYMBOLS_PER_SLOT = 14
 
 
@@ -142,11 +143,12 @@ class SpectrumSharingDApp(DApp):
         # IQ recording
         if self.save_iqs:
             from iq_saver.iq_saver import IQSaver
-            # Nominal capture rate of the on-disk IQ: each indication carries one
-            # OFDM symbol of fft_size time-domain samples taken at the gNB ADC rate,
-            # which is fft_size * subcarrier_spacing. This is core:sample_rate per
-            # the SigMF spec (the rate of the bytes actually on disk), NOT the
-            # ~100 Hz sensing cadence at which indications arrive.
+            # Nominal capture rate of the on-disk IQ. Each indication carries one
+            # OFDM symbol of fft_size post-FFT frequency-domain bins (OAI rxdataF);
+            # fft_size * subcarrier_spacing is the ADC sample rate that produced
+            # those bins, equivalently the total bandwidth the fft_size bins span.
+            # This is core:sample_rate per the SigMF spec, NOT the ~100 Hz sensing
+            # cadence at which indications arrive.
             sample_rate = self.fft_size * self.num_subcarrier_spacing * 1e3
             dapp_logger.info(f"Nominal IQ capture rate: {sample_rate / 1e6:.3f} Msps")
             # Detector decision window. The static detector averages `window` frames
@@ -157,9 +159,10 @@ class SpectrumSharingDApp(DApp):
                 average_over_frames = self._detector.window
             else:
                 average_over_frames = 1
-            # The dApp writes raw, undecimated IQ, so the true on-disk sample rate
-            # equals the nominal rate. effective_sample_rate would only drop below
-            # core:sample_rate if the writer decimated on-device, which it does not.
+            # The dApp writes every received symbol undecimated, so the true
+            # on-disk rate equals the nominal rate. effective_sample_rate would
+            # only drop below core:sample_rate if the writer decimated on-device,
+            # which it does not.
             effective_sample_rate = sample_rate
             self.iq_saver = IQSaver(
                 base_path=LOG_DIR,
@@ -175,16 +178,24 @@ class SpectrumSharingDApp(DApp):
                     f" - threshold: {self._detector.threshold_db} dB"
                 ),
                 dtype="ci16_le",
+                # domain="frequency": the captured samples are post-FFT
+                # frequency-domain bins (OAI rxdataF), one OFDM symbol of fft_size
+                # bins per record — not time-domain ADC samples. The explicit
+                # marker is required because core:datatype is ci16_le, which the
+                # SPEC §6.4 datatype policy would otherwise infer as time-domain
+                # (rxdataF is int16 I/Q, so we keep the honest ci16_le datatype
+                # and let this marker override the inference).
+                #
                 # OFDM resource-grid geometry (spear-lake DAPP_SIGMF_FIELDS.yml,
-                # §6.5), emitted as component dims — a loader reconstructs the
-                # occupied bandwidth as n_prbs * n_sc_per_prb rather than reading
-                # a single fft_size. n_ants=1: the dApp captures one antenna
-                # stream. layout / samples_per_slot are intentionally omitted:
-                # they describe the on-disk interleaving of a *frequency-domain*
-                # resource grid (as emitted by the aerial post-FFT recorder), but
-                # this path writes raw time-domain IQ (fft_size samples/symbol),
-                # so that reshape does not apply and would misdescribe the bytes.
-                domain="time",
+                # §6.5) is emitted as component dims — a loader reconstructs the
+                # occupied bandwidth as n_prbs * n_sc_per_prb. n_ants=1: the dApp
+                # captures one antenna stream. layout / samples_per_slot are
+                # intentionally omitted: they describe the compact resource-grid
+                # interleaving (as the aerial recorder emits), but each on-disk
+                # record here is fft_size *padded* FFT bins for a single symbol
+                # (fft_size != n_prbs * n_sc_per_prb), so that reshape does not
+                # apply and would misdescribe the bytes.
+                domain="frequency",
                 n_prbs=self.num_prbs,
                 n_sc_per_prb=self.num_consecutive_subcarriers_for_prb,
                 n_ants=1,
