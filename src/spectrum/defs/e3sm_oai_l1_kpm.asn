@@ -1,0 +1,37 @@
+-- OAI-L1-KPM Service Model ASN.1 Definitions (spear-dApp side)
+--
+-- Mirror of openair2/E3AP/service_models/oai_l1_kpm_sm/MESSAGES/ASN1/V1/
+-- e3sm_oai_l1_kpm.asn in the OAI tree. Kept identical so the OAI APER
+-- encoder and this asn1tools decoder agree byte-for-byte.
+--
+-- L1KPM-Indication is the inner payload of an E3-IndicationMessage from
+-- the L1 KPM SM (RAN Function ID 2). Aerial dApps on the JSON channel
+-- receive the equivalent payload as inline JSON; this schema covers the
+-- ASN.1 channel that spear-dApp connects on.
+
+OAI-L1-KPM-SM DEFINITIONS AUTOMATIC TAGS ::= BEGIN
+
+L1KPM-ShmRef ::= SEQUENCE {
+    shmName         OCTET STRING (SIZE (1..63)),
+    fhBufferIndex   INTEGER (0..255),
+    fhWriteIndex    INTEGER (0..4294967295)
+}
+
+SensingRange ::= SEQUENCE {
+    startSymbol  INTEGER (0..13),
+    numSymbols   INTEGER (1..14),
+    rbStart      INTEGER (0..272),
+    rbSize       INTEGER (1..273)
+}
+
+L1KPM-Indication ::= SEQUENCE {
+    iqSamplesRef        L1KPM-ShmRef OPTIONAL,
+    timestamp           INTEGER,
+    sfn                 INTEGER (0..65535),
+    slot                INTEGER (0..65535),
+    cellId              INTEGER (0..65535) OPTIONAL,
+    nRxAnt              INTEGER (0..65535) OPTIONAL,
+    sensingRanges       SEQUENCE (SIZE (0..128)) OF SensingRange OPTIONAL
+}
+
+END

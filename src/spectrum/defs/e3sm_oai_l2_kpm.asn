@@ -1,0 +1,31 @@
+-- OAI-L2-KPM Service Model ASN.1 Definitions (spear-dApp side)
+--
+-- Mirror of openair2/E3AP/service_models/oai_l2_kpm_sm/MESSAGES/ASN1/
+-- V1/e3sm_oai_l2_kpm.asn in the OAI tree. Kept identical so the OAI
+-- APER encoder and this asn1tools decoder agree byte-for-byte.
+--
+-- L2KPM-Indication is the inner payload of an E3-IndicationMessage
+-- from the L2 KPM SM (RAN Function ID 3). The dApp correlates with
+-- the L1 KPM SM's IQ indication by (sfn, slot): L1 ships the IQ,
+-- L2 ships the time-frequency footprint of each sensing PUSCH so the
+-- dApp knows which (symbol, RB) cells of the IQ carry the sensing
+-- signal.
+
+OAI-L2-KPM-SM DEFINITIONS AUTOMATIC TAGS ::= BEGIN
+
+SensingRange ::= SEQUENCE {
+    startSymbol  INTEGER (0..13),
+    numSymbols   INTEGER (1..14),
+    rbStart      INTEGER (0..272),
+    rbSize       INTEGER (1..273)
+}
+
+L2KPM-Indication ::= SEQUENCE {
+    timestamp      INTEGER,
+    sfn            INTEGER (0..65535),
+    slot           INTEGER (0..65535),
+    beam           INTEGER (0..3) OPTIONAL,
+    sensingRanges  SEQUENCE (SIZE (0..128)) OF SensingRange
+}
+
+END

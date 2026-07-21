@@ -2,17 +2,26 @@
 -- This service model extends E3 messages for spectrum sharing applications
 --
 -- Usage with E3 Protocol:
--- - Spectrum-IndicationData structures are encoded into the protocolData field of E3-IndicationMessage
--- - Spectrum-ControlData structures are encoded into the actionData field of E3-ControlAction
--- - Use E3-PDU as the top-level message structure
+-- - Spectrum-IndicationData    is encoded into E3-IndicationMessage.protocolData
+-- - Spectrum-DAppControlData   is encoded into E3-DAppControlAction.actionData
+-- - Spectrum-DAppReportData    is encoded into E3-DAppReport.reportData
+-- - Spectrum-XAppControlData   is encoded into E3-XAppControlAction.xAppControlData
+--
+-- The control / report / xApp "*Data" envelopes are payload-only SEQUENCEs
+-- wrapping a single Payload CHOICE, matching the merged develop-dapp gNB
+-- decoder exactly (the CHOICE alternative is the on-wire discriminator; no
+-- separate type field is encoded on the APER wire). The JSON codec adds an
+-- optional human-readable type key next to the payload, which the gNB's JSON
+-- decoder tolerates. The IQ-data indication below keeps its own type
+-- discriminator and is dApp-internal (live IQ arrives via /e3_ran_buffers
+-- shm + the L1-KPM SM, not this envelope).
 
 SPECTRUM-SM DEFINITIONS AUTOMATIC TAGS ::= BEGIN
 
 -- ============================================================================
--- SM SPECTRUM RAN FUNCTION DATA STRUCTURES  
+-- SM SPECTRUM RAN FUNCTION DATA STRUCTURES
 -- ============================================================================
 
--- Spectrum RAN function data
 Spectrum-RanFunctionData ::= SEQUENCE {
     name                    OCTET STRING (SIZE (1..32)),
     version                 INTEGER (0..65535),
@@ -23,29 +32,95 @@ Spectrum-RanFunctionData ::= SEQUENCE {
 -- INDICATION MESSAGE STRUCTURES
 -- ============================================================================
 
--- Spectrum IQ Data Indication (raw I/Q samples from RAN)
+-- Spectrum IQ Data Indication (raw I/Q samples / shm metadata blob from RAN)
 Spectrum-IQDataIndication ::= SEQUENCE {
     iqSamples               OCTET STRING (SIZE (1..16384)),                 -- Raw I/Q data as int16 array
     sampleCount             INTEGER (0..32768),                             -- Number of I/Q samples
     timestamp               INTEGER (0..2147483647) OPTIONAL                -- Unix timestamp when samples were captured
 }
 
+Spectrum-IndicationType ::= ENUMERATED {
+    iqData                  (0)
+}
+
+Spectrum-IndicationPayload ::= CHOICE {
+    iqDataIndication                Spectrum-IQDataIndication
+}
+
+-- Top-level indication PDU carried by E3-IndicationMessage.protocolData
+Spectrum-IndicationData ::= SEQUENCE {
+    indicationType          Spectrum-IndicationType,
+    indicationPayload       Spectrum-IndicationPayload
+}
+
 -- ============================================================================
--- CONTROL ACTION STRUCTURES  
+-- dAPP CONTROL ACTION STRUCTURES
 -- ============================================================================
 
--- PRB Blacklist Control (main control message used by spectrum dApp)
+-- PRB Blacklist Control (main control message used by spectrum dApp).
+-- Drives the gNB's per-MAC prb_block_state_t (gNB_scheduler_prb_block.c)
+-- via set_prb_block_mask(): each PRB in blacklistedPRBs gets all 14 symbols
+-- marked occupied in vrb_map_UL at slot start, so every downstream UL
+-- scheduling step treats it as unavailable.
+-- Field/type names match the merged develop-dapp gNB decoder wire contract
+-- (openair2/E3AP/service_models/spectrum_sm/MESSAGES/ASN1/V1/e3sm_spectrum.asn).
 Spectrum-PRBBlacklistControl ::= SEQUENCE {
-    blacklistedPRBs         SEQUENCE (SIZE (0..maxPRBs)) OF INTEGER (0..maxPRBIndex),     -- List of PRB indices
+    blacklistedPRBs         SEQUENCE (SIZE (0..maxPRBs)) OF INTEGER (0..maxPRBIndex),     -- List of PRB indices to block on the UL
     samplingThreshold       INTEGER (0..100) OPTIONAL,                                    -- Sampling ratio for the IQ captures, one delivery each samplingThreshold
     validityPeriod          INTEGER (1..3600) OPTIONAL                                    -- How long this blacklist is valid (seconds)
 }
 
+-- Sensing Policy Control: per-slot 14-bit symbol bitmap consumed by the
+-- masked UL TDA selector on the gNB.  Bit s set in maskPerSlot[k] => "for
+-- slot k of the frame, prefer TDAs that don't claim symbol s so that
+-- symbol stays free for sensing".  Length of maskPerSlot MUST equal the
+-- gNB's numb_slots_frame (e.g. 20 at mu=1).  deactivate=TRUE clears the
+-- policy regardless of mask contents.
+Spectrum-SensingPolicyControl ::= SEQUENCE {
+    maskPerSlot             SEQUENCE (SIZE (1..maxSlotsFrame)) OF INTEGER (0..maxSymbolMask),
+    deactivate              BOOLEAN DEFAULT FALSE,
+    validityPeriod          INTEGER (1..3600) OPTIONAL
+}
+
+-- Extensibility marker (...) keeps the APER wire bit-width stable when new
+-- alternatives are added (1-alt CHOICE encodes the discriminator in 0 bits,
+-- 2-alt in 1 bit). Without it, extending the CHOICE would silently break
+-- every existing deployment. The discriminator lives in the CHOICE itself,
+-- so the top-level SEQUENCE carries ONLY the payload, matching the gNB
+-- decoder (no separate controlType field on the APER wire).
+Spectrum-DAppControlPayload ::= CHOICE {
+    prbBlacklistControl     Spectrum-PRBBlacklistControl,
+    ...,
+    sensingPolicyControl    Spectrum-SensingPolicyControl
+}
+
+-- Top-level dApp control PDU carried by E3-DAppControlAction.actionData
+Spectrum-DAppControlData ::= SEQUENCE {
+    controlPayload          Spectrum-DAppControlPayload
+}
+
 -- ============================================================================
--- xAPP CONTROL ACTION STRUCTURES  
+-- dAPP REPORT STRUCTURES
 -- ============================================================================
 
--- Control payload for RAN function 1
+Spectrum-PRBBlacklistReport ::= SEQUENCE {
+    blacklistedPRBs         SEQUENCE (SIZE (0..maxPRBs)) OF INTEGER (0..maxPRBIndex)     -- List of PRB indices
+}
+
+Spectrum-DAppReportPayload ::= CHOICE {
+    prbBlacklistReport      Spectrum-PRBBlacklistReport
+}
+
+-- Top-level dApp report PDU carried by E3-DAppReport.reportData
+Spectrum-DAppReportData ::= SEQUENCE {
+    reportPayload           Spectrum-DAppReportPayload
+}
+
+-- ============================================================================
+-- xAPP CONTROL ACTION STRUCTURES
+-- ============================================================================
+
+-- Control payload mirroring the dApp PRB blacklist for xApp-driven blocking
 Spectrum-PRBBlockedControl ::= SEQUENCE {
     blockedPRBs             SEQUENCE (SIZE (0..maxPRBs)) OF INTEGER (0..maxPRBIndex)
 }
@@ -57,20 +132,23 @@ Spectrum-ConfigControl ::= SEQUENCE {
     enable                  BOOLEAN OPTIONAL                                -- Enable/disable spectrum monitoring
 }
 
--- ============================================================================
--- DAPP REPORT STRUCTURES 
--- ============================================================================
+Spectrum-XAppControlPayload ::= CHOICE {
+    prbBlockedControl       Spectrum-PRBBlockedControl,
+    configControl           Spectrum-ConfigControl
+}
 
-Spectrum-PRBBlacklistReport ::= SEQUENCE {
-    blacklistedPRBs         SEQUENCE (SIZE (0..maxPRBs)) OF INTEGER (0..maxPRBIndex)     -- List of PRB indices
+-- Top-level xApp control PDU carried by E3-XAppControlAction.xAppControlData
+Spectrum-XAppControlData ::= SEQUENCE {
+    controlPayload          Spectrum-XAppControlPayload
 }
 
 -- ============================================================================
 -- CONSTANTS AND CONSTRAINTS
 -- ============================================================================
 
--- Maximum values based on 5G NR specifications
-maxPRBs                     INTEGER ::= 273  -- Maximum PRBs in 5G NR
-maxPRBIndex                 INTEGER ::= 272  -- maxPRBs - 1
+maxPRBs                     INTEGER ::= 273                                 -- Maximum PRBs in 5G NR
+maxPRBIndex                 INTEGER ::= 272                                 -- maxPRBs - 1
+maxSlotsFrame               INTEGER ::= 160                                 -- mu=4 worst case (20 at mu=1)
+maxSymbolMask               INTEGER ::= 16383                               -- 14-bit symbol bitmap = (1 << 14) - 1
 
 END
