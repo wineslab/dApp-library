@@ -8,9 +8,116 @@
     <script src="//cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
 </head>
 
-<body>
+<body style="margin: 0;">
+    <!-- Top navbar with a single Settings button. Clicking toggles the
+         right-side sidebar. Kept light-weight (no framework) since the
+         rest of the page is plain HTML/JS too. -->
+    <nav id="topbar"
+         style="display: flex; align-items: center; justify-content: space-between;
+                padding: 8px 16px; background: #1a73e8; color: #fff;
+                font-family: sans-serif; box-shadow: 0 2px 4px rgba(0,0,0,0.15);">
+        <span style="font-size: 16px; font-weight: 600;">dApp Spectrum Dashboard</span>
+        <button id="settings_toggle"
+                style="padding: 6px 14px; font-size: 13px; border: none;
+                       border-radius: 4px; background: rgba(255,255,255,0.15);
+                       color: #fff; cursor: pointer;">
+            ⚙ Settings
+        </button>
+    </nav>
+
+    <!-- Settings sidebar. Slides in from the right via CSS transform.
+         All state here is browser-local except `aggregation_size`, which
+         is round-tripped to the dApp via socket.io.
+         dB-range section: static (default) or EWMA. When static, the
+         user can edit min/max directly. When EWMA, min/max adapt from
+         the incoming data using exponential smoothing.
+         Aggregation section: how many symbol-rows the dashboard server
+         collapses into one displayed row. Default 14 = collapse the
+         whole UL slot to one row (the original behaviour). -->
+    <aside id="settings_sidebar"
+           style="position: fixed; top: 0; right: 0; height: 100%; width: 320px;
+                  background: #fafafa; box-shadow: -2px 0 6px rgba(0,0,0,0.2);
+                  transform: translateX(100%); transition: transform 0.2s ease;
+                  z-index: 10000; padding: 16px;
+                  font-family: sans-serif; box-sizing: border-box;
+                  overflow-y: auto;">
+        <div style="display: flex; justify-content: space-between;
+                    align-items: center; margin-bottom: 16px;">
+            <strong style="font-size: 15px;">Display settings</strong>
+            <button id="settings_close"
+                    style="background: none; border: none; font-size: 18px;
+                           cursor: pointer; color: #555;">✕</button>
+        </div>
+
+        <fieldset style="border: 1px solid #ddd; padding: 12px; margin-bottom: 16px;">
+            <legend style="font-size: 13px; padding: 0 6px;">Waterfall dB range</legend>
+            <label style="display: block; margin-bottom: 6px;">
+                <input type="radio" name="db_mode" value="static" id="db_mode_static" checked>
+                Static (fixed min/max)
+            </label>
+            <label style="display: block; margin-bottom: 10px;">
+                <input type="radio" name="db_mode" value="ewma" id="db_mode_ewma">
+                EWMA (auto-adapt to recent data)
+            </label>
+            <div id="db_static_inputs">
+                <label style="display: block; font-size: 12px; margin-bottom: 4px;">
+                    Min dB
+                    <input id="db_min_input" type="number" step="1"
+                           style="margin-left: 6px; width: 80px; padding: 4px;
+                                  border: 1px solid #ccc; border-radius: 3px;">
+                </label>
+                <label style="display: block; font-size: 12px;">
+                    Max dB
+                    <input id="db_max_input" type="number" step="1"
+                           style="margin-left: 6px; width: 80px; padding: 4px;
+                                  border: 1px solid #ccc; border-radius: 3px;">
+                </label>
+            </div>
+        </fieldset>
+
+        <fieldset style="border: 1px solid #ddd; padding: 12px;">
+            <legend style="font-size: 13px; padding: 0 6px;">Symbol aggregation</legend>
+            <label style="display: block; font-size: 12px;">
+                Symbols per displayed row
+                <input id="agg_input" type="number" min="1" max="14" step="1"
+                       style="margin-left: 6px; width: 70px; padding: 4px;
+                              border: 1px solid #ccc; border-radius: 3px;">
+            </label>
+            <div style="font-size: 11px; color: #777; margin-top: 6px;">
+                14 = collapse every slot to one row (default).
+                1 = keep every symbol row.
+            </div>
+        </fieldset>
+    </aside>
+
     <div id="prbs"></div>
-    <div id="magnitude"></div>
+
+    <!-- Waterfall: Canvas2D scrolling pixelmap, replaces the Plotly heatmap
+         that was here. Rendered at native resolution (one canvas pixel per
+         data bin); CSS stretches it to the container width. -->
+    <div id="waterfall_container"
+         style="position: relative; max-width: 100%; margin: 8px auto; padding: 0 24px; box-sizing: border-box;">
+        <div style="text-align: center; font-size: 16px; font-weight: 500; padding: 6px 0;">
+            dApp Sensed Spectrum
+        </div>
+        <div id="waterfall_axis_top"
+             style="display: flex; justify-content: space-between; padding: 0 0 2px 0;
+                    font-size: 11px; color: #555;">
+            <span></span><span></span><span></span><span></span><span></span>
+        </div>
+        <canvas id="waterfall_canvas"
+                style="display: block; width: 100%; height: 360px;
+                       image-rendering: pixelated; image-rendering: crisp-edges;
+                       background: #000; border: 1px solid #ccc;"></canvas>
+        <div id="waterfall_legend"
+             style="display: flex; justify-content: space-between; align-items: center;
+                    padding: 4px 0; font-size: 11px; color: #555;">
+            <span>Time ↓ (newest at the top)</span>
+            <span>Frequency [GHz]</span>
+            <span><span id="waterfall_range_label">Magnitude · auto-scaled dB</span></span>
+        </div>
+    </div>
+
     <div style="display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 24px;">
         <div id="predicted_label"></div>
         <div id="ground_truth_label"></div>
@@ -19,108 +126,291 @@
     <div id="adaptive_noise_floor"></div>
 
     <script>
-        var waterfall = [{
-            z: [],
-            type: 'heatmap',
-            colorscale: "Viridis",
-            zmin: 0,
-            zmax: 100,
-            colorbar: {
-                title:{ 
-                    text: "Magnitude [dB]",
-                    side: 'right'
-                },
-                orientation: 'v'
+        // Waterfall rendering lives in a Web Worker that owns the canvas
+        // via transferControlToOffscreen(). Main thread only forwards
+        // binary frames (zero-copy ArrayBuffer transfer) and sidebar
+        // control changes; UI stays responsive at peak row rates, and
+        // the render loop never competes with the main thread for time.
+
+        // dB-range/legend state lives on the main thread so the sidebar
+        // and legend remain DOM-driven; the worker mirrors it via
+        // postMessage and reports back the EWMA-adapted values.
+        var WATERFALL_MIN_DB = 0.0;
+        var WATERFALL_MAX_DB = 80.0;
+        var minDb = WATERFALL_MIN_DB;
+        var maxDb = WATERFALL_MAX_DB;
+        var dbMode = "static";   // "static" | "ewma"
+        var rangeLabelEl = null;
+        var waterfallWidth = 0;  // mirrored from server init for axis labels
+        var waterfallHeight = 0;
+        var renderWorker = null;
+        var workerReady = false;
+
+        // Worker source embedded as a string + Blob URL to avoid needing a
+        // separate Flask static route. The worker owns canvas state end-to-end.
+        var RENDER_WORKER_SOURCE = `
+            let canvas = null;
+            let ctx = null;
+            let backCanvas = null;
+            let backCtx = null;
+            let width = 0;
+            let height = 0;
+            let palette32 = null;
+            let imgData = null;
+            let imgPix32 = null;
+            let dbMode = 'static';
+            let minDb = 0;
+            let maxDb = 80;
+            const EWMA_ALPHA = 0.05;
+            const MAG_HEADER_BYTES = 8;
+            // Wire format: uint16 magnitudes on [QUANT_MIN_DB, QUANT_MAX_DB].
+            // Must match server-side QUANT_* constants. Dequant folds into
+            // the palette-mapping multiply (one multiply+add per pixel).
+            const QUANT_MIN_DB = -20.0;
+            const QUANT_MAX_DB = 100.0;
+            const QUANT_DB_PER_LSB = (QUANT_MAX_DB - QUANT_MIN_DB) / 65535.0;
+
+            function buildPalette32() {
+                const stops = [
+                    [0.00,   0,   0,   0],
+                    [0.20,  32,   0, 128],
+                    [0.40,   0, 128, 192],
+                    [0.60,   0, 192,  96],
+                    [0.80, 224, 224,  32],
+                    [1.00, 255, 255, 255]
+                ];
+                const lut = new Uint32Array(256);
+                for (let i = 0; i < 256; i++) {
+                    const t = i / 255;
+                    let s = 0;
+                    while (s < stops.length - 1 && stops[s + 1][0] < t) s++;
+                    const t0 = stops[s][0], t1 = stops[s + 1][0];
+                    const f = (t - t0) / (t1 - t0);
+                    const r = Math.round(stops[s][1] + f * (stops[s + 1][1] - stops[s][1]));
+                    const g = Math.round(stops[s][2] + f * (stops[s + 1][2] - stops[s][2]));
+                    const b = Math.round(stops[s][3] + f * (stops[s + 1][3] - stops[s][3]));
+                    // ABGR on little-endian for Uint32 → RGBA byte order.
+                    lut[i] = ((0xFF << 24) | (b << 16) | (g << 8) | r) >>> 0;
+                }
+                return lut;
             }
-        }];
 
-        var waterfallLayout = {
-            title: {
-                text: "dApp Sensed Spectrum",
-                font: { size: 16 }
-            },
-            xaxis: {
-                title: {
-                    text: "OFDM Symbol Subcarriers",
-                    font: { size: 14 }
+            function init(offscreen, w, h, initialDb) {
+                canvas = offscreen;
+                width = w;
+                height = h;
+                canvas.width = w;
+                canvas.height = h;
+                ctx = canvas.getContext('2d', { alpha: false });
+                backCanvas = new OffscreenCanvas(w, h);
+                backCtx = backCanvas.getContext('2d', { alpha: false });
+                palette32 = buildPalette32();
+                // One ImageData allocated at full canvas size. Render fills
+                // only the top rowsToDraw rows and commits with the
+                // dirty-rect form of putImageData → no hot-path allocation.
+                imgData = ctx.createImageData(width, height);
+                imgPix32 = new Uint32Array(imgData.data.buffer);
+                if (initialDb) {
+                    if (typeof initialDb.minDb === 'number') minDb = initialDb.minDb;
+                    if (typeof initialDb.maxDb === 'number') maxDb = initialDb.maxDb;
+                    if (typeof initialDb.mode === 'string') dbMode = initialDb.mode;
                 }
-            },
-            yaxis: {
-                title: {
-                    text: "Time samples",
-                    font: { size: 14 }
-                },
-                autorange: 'reversed'
-            },
-            annotations: [
-                {
-                    x: 0, // Will be updated dynamically
-                    y: 1.15,
-                    xref: 'x',
-                    yref: 'paper',
-                    text: 'Frequency in GHz',
-                    showarrow: false,
-                    font: {
-                        size: 12
-                    }
-                },  
-                {
-                    x: 0, // Will be updated dynamically
-                    y: 1.1,
-                    xref: 'x',
-                    yref: 'paper',
-                    text: `0.0000`,
-                    showarrow: false,
-                    font: {
-                        size: 12
-                    }
-                },                {
-                    x: 0, // Will be updated dynamically
-                    y: 1.1,
-                    xref: 'x',
-                    yref: 'paper',
-                    text: `0.0000`,
-                    showarrow: false,
-                    font: {
-                        size: 12
-                    }
-                },
+                ctx.fillStyle = '#000';
+                ctx.fillRect(0, 0, w, h);
+            }
 
-                {
-                    x: 0, // Will be updated dynamically
-                    y: 1.1,
-                    xref: 'x',
-                    yref: 'paper',
-                    text: `0.0000`,
-                    showarrow: false,
-                    font: {
-                        size: 12
+            function decodeMagFrame(ab) {
+                if (ab.byteLength < MAG_HEADER_BYTES) return null;
+                const dv = new DataView(ab, 0, MAG_HEADER_BYTES);
+                const ageUs = dv.getFloat64(0, true);
+                // Payload is Uint16 quantized; dequant happens inline in the
+                // palette mapping below — no extra pass over the data.
+                const view = new Uint16Array(ab, MAG_HEADER_BYTES);
+                return { ageUs: ageUs, view: view };
+            }
+
+            function renderFrame(ab) {
+                const frame = decodeMagFrame(ab);
+                if (!frame || width === 0) {
+                    return { rendered: 0, dropped: 0, ageUs: 0, minDb: minDb, maxDb: maxDb, dbMode: dbMode };
+                }
+                const view = frame.view;
+                const totalRows = Math.floor(view.length / width);
+                if (totalRows === 0) {
+                    return { rendered: 0, dropped: 0, ageUs: frame.ageUs, minDb: minDb, maxDb: maxDb, dbMode: dbMode };
+                }
+                let rowsToDraw = totalRows;
+                let skipRows = 0;
+                if (rowsToDraw > height) {
+                    skipRows = rowsToDraw - height;
+                    rowsToDraw = height;
+                }
+                if (dbMode === 'ewma') {
+                    // Min/max in Uint16 space (cheaper than float compares);
+                    // convert endpoints back to dB once before the EWMA blend.
+                    let uMin = 0xFFFF, uMax = 0;
+                    for (let ii = 0; ii < view.length; ii++) {
+                        const u = view[ii];
+                        if (u < uMin) uMin = u;
+                        if (u > uMax) uMax = u;
                     }
-                },
-                {
-                    x: 0, // Will be updated dynamically
-                    y: 1.1,
-                    xref: 'x',
-                    yref: 'paper',
-                    text: `0.0000`,
-                    showarrow: false,
-                    font: {
-                        size: 12
-                    }
-                },
-                {
-                    x: 0, // Will be updated dynamically
-                    y: 1.1,
-                    xref: 'x',
-                    yref: 'paper',
-                    text: `0.0000`,
-                    showarrow: false,
-                    font: {
-                        size: 12
+                    if (uMin <= uMax) {
+                        const frameMin = uMin * QUANT_DB_PER_LSB + QUANT_MIN_DB;
+                        let frameMax = uMax * QUANT_DB_PER_LSB + QUANT_MIN_DB;
+                        if (frameMax - frameMin < 1) frameMax = frameMin + 1;
+                        minDb = (1 - EWMA_ALPHA) * minDb + EWMA_ALPHA * frameMin;
+                        maxDb = (1 - EWMA_ALPHA) * maxDb + EWMA_ALPHA * frameMax;
                     }
                 }
-            ]
-        };
+                const lo = minDb;
+                let span = maxDb - minDb;
+                if (span < 1e-3) span = 1e-3;
+                const invRange = 255 / span;
+                // Folded affine: Uint16 → dB → palette index in one
+                // (multiply + add) per pixel. dB = u * DB_PER_LSB + MIN_DB;
+                // idx = (dB - lo) * invRange → idx = u * pixScale + pixOffset.
+                const pixScale = QUANT_DB_PER_LSB * invRange;
+                const pixOffset = (QUANT_MIN_DB - lo) * invRange;
+                // Producer order is oldest→newest; canvas wants newest at y=0,
+                // so we fill the buffer from y=rowsToDraw-1 downward.
+                let yPos = rowsToDraw - 1;
+                for (let r = skipRows; r < totalRows && yPos >= 0; r++) {
+                    const srcOff = r * width;
+                    const dstOff = yPos * width;
+                    for (let k = 0; k < width; k++) {
+                        let idx = (view[srcOff + k] * pixScale + pixOffset) | 0;
+                        if (idx < 0) idx = 0;
+                        else if (idx > 255) idx = 255;
+                        imgPix32[dstOff + k] = palette32[idx];
+                    }
+                    yPos--;
+                }
+                if (rowsToDraw < height) {
+                    backCtx.drawImage(canvas, 0, 0);
+                    ctx.drawImage(
+                        backCanvas,
+                        0, 0, width, height - rowsToDraw,
+                        0, rowsToDraw, width, height - rowsToDraw
+                    );
+                }
+                // Dirty-rect form: only commit the freshly-filled top
+                // rowsToDraw rows from the pre-allocated buffer.
+                ctx.putImageData(imgData, 0, 0, 0, 0, width, rowsToDraw);
+                return {
+                    rendered: rowsToDraw,
+                    dropped: skipRows,
+                    ageUs: frame.ageUs,
+                    minDb: minDb,
+                    maxDb: maxDb,
+                    dbMode: dbMode,
+                };
+            }
+
+            function reset() {
+                if (!ctx) return;
+                ctx.fillStyle = '#000';
+                ctx.fillRect(0, 0, width, height);
+            }
+
+            self.onmessage = function (ev) {
+                const msg = ev.data;
+                switch (msg.type) {
+                    case 'init':
+                        init(msg.canvas, msg.width, msg.height, msg.db);
+                        self.postMessage({ type: 'inited' });
+                        break;
+                    case 'frame': {
+                        // Always reply with 'rendered' even if renderFrame
+                        // throws — otherwise the server's K-in-flight gate
+                        // (MAX_INFLIGHT=3) saturates, the 500 ms watchdog
+                        // saves it, and the canvas stays unrendered until
+                        // page reload. Reporting the error in the payload
+                        // lets the main thread log it without killing the
+                        // worker outright.
+                        let stats;
+                        try {
+                            stats = renderFrame(msg.buffer);
+                        } catch (err) {
+                            stats = { rendered: 0, dropped: 0, ageUs: 0,
+                                      minDb: minDb, maxDb: maxDb, dbMode: dbMode,
+                                      error: String((err && err.message) || err) };
+                        }
+                        self.postMessage({ type: 'rendered', stats: stats });
+                        break;
+                    }
+                    case 'set_db':
+                        if (typeof msg.mode === 'string') dbMode = msg.mode;
+                        if (typeof msg.minDb === 'number') minDb = msg.minDb;
+                        if (typeof msg.maxDb === 'number') maxDb = msg.maxDb;
+                        break;
+                    case 'reset':
+                        reset();
+                        break;
+                }
+            };
+        `;
+
+        function spawnRenderWorker() {
+            // Instantiate the worker from a Blob URL so no separate JS
+            // file or Flask static route is needed. The URL revokes
+            // itself after the worker has loaded the source.
+            var blob = new Blob([RENDER_WORKER_SOURCE], { type: 'application/javascript' });
+            var url = URL.createObjectURL(blob);
+            renderWorker = new Worker(url);
+            URL.revokeObjectURL(url);
+            renderWorker.onmessage = onWorkerMessage;
+            // If the worker dies (uncaught throw inside the worker scope),
+            // the OffscreenCanvas it owns is gone with it — the visible
+            // canvas can never be repainted from the main thread. The only
+            // recovery is a full page reload (which re-creates the worker
+            // and re-transfers a fresh canvas). Surface the error to the
+            // console and force the reload so the user doesn't sit on a
+            // dead dashboard waiting for it to come back.
+            renderWorker.onerror = function (ev) {
+                console.error('[waterfall] worker error:',
+                              ev.message, ev.filename, ev.lineno);
+                try { renderWorker.terminate(); } catch (_) {}
+                renderWorker = null;
+                location.reload();
+            };
+            renderWorker.onmessageerror = function (ev) {
+                console.error('[waterfall] worker messageerror:', ev);
+            };
+        }
+
+        function initWaterfall(numBins, depth) {
+            // OffscreenCanvas transfer is a one-shot: the canvas can
+            // never be touched from the main thread again. We resize
+            // the DOM canvas FIRST (so CSS layout uses the right
+            // intrinsic size) and only then hand it off.
+            var canvasEl = document.getElementById('waterfall_canvas');
+            canvasEl.width = numBins;
+            canvasEl.height = depth;
+            waterfallWidth = numBins;
+            waterfallHeight = depth;
+            rangeLabelEl = document.getElementById('waterfall_range_label');
+            if (!renderWorker) spawnRenderWorker();
+            var offscreen = canvasEl.transferControlToOffscreen();
+            renderWorker.postMessage({
+                type: 'init',
+                canvas: offscreen,
+                width: numBins,
+                height: depth,
+                db: { mode: dbMode, minDb: minDb, maxDb: maxDb },
+            }, [offscreen]);
+            workerReady = true;
+        }
+
+        function setWaterfallFreqLabels(centerFreqHz, bwHz) {
+            // Render 5 evenly-spaced frequency labels above the canvas.
+            var axisRow = document.getElementById('waterfall_axis_top');
+            var spans = axisRow.querySelectorAll('span');
+            for (var i = 0; i < spans.length; i++) {
+                var t = i / (spans.length - 1);          // 0 .. 1 across the axis
+                var hz = centerFreqHz + (t - 0.5) * bwHz;
+                spans[i].textContent = (hz / 1e9).toFixed(4);
+            }
+        }
 
         var prbs = [{
             type: 'heatmap',
@@ -198,7 +488,11 @@
             x: [],
             y: [],
             mode: 'lines',
-            type: 'scattergl'
+            // 'scatter' (SVG) rather than 'scattergl' to avoid Plotly's
+            // WebGL context warnings ("clear() called with no buffers in
+            // bitmask"). The noise-floor curve is small and slow-updating
+            // so SVG is plenty fast.
+            type: 'scatter'
         }];
 
         var adaptiveNoiseFloorLayout = {
@@ -221,11 +515,8 @@
             }
         };
 
-        var waterfall_buffer;
         var prbs_buffer;
         var predictedLabel;
-        var start_ignore;
-        var end_ignore;
         var initialized = false;
         var samplingThresholdInput;
         var gtInput = null;
@@ -238,39 +529,45 @@
         }
 
         var socket = io.connect(location.origin);
+
+        // --- Backgrounded-tab pause ------------------------------------
+        // The server mutes emits while the tab is hidden, so engineio's
+        // outbound queue stays flat instead of accumulating bytes the
+        // browser can't drain. The worker itself doesn't need any
+        // special handling — it simply stops receiving postMessage
+        // forwards from the main thread when no frames arrive.
+        function emitVisibility() {
+            socket.emit('set_client_visible', !document.hidden);
+        }
+        document.addEventListener('visibilitychange', emitVisibility);
+        // Send the initial state on (re)connect. The socket may complete
+        // its handshake before this listener attaches; emitting on
+        // 'connect' is safe even if it's the first signal.
+        socket.on('connect', emitVisibility);
+
+        // Surface socket-level faults to the console so a frozen-looking
+        // dashboard self-diagnoses in DevTools without needing a server
+        // log. The server also gets a disconnect event and resets its
+        // visibility state, but the user-visible signal is the dApp log.
+        socket.on('disconnect', function (reason) {
+            console.warn('[socket] disconnected:', reason);
+        });
+        socket.on('connect_error', function (err) {
+            console.warn('[socket] connect_error:', err && err.message);
+        });
+        socket.on('reconnect_failed', function () {
+            console.error('[socket] reconnect_failed — manual reload required');
+        });
+
         socket.on('initialize_plot', function (data) {
-            var ofdm_symbol_size = data.magnitude[0].length;
-            var first_carrier_offset = data.first_carrier_offset;
-            var freq_step = data.bw / ofdm_symbol_size;
-            var start_freq = data.center_freq - (ofdm_symbol_size / 2) * freq_step;
-            var freq_labels = [];
-            for (let i = 0; i < 5; i++) {
-                let pos = Math.floor(i * ofdm_symbol_size / 4);
-                let f = (start_freq + pos * freq_step) / 1e9;
-                freq_labels.push(f.toFixed(4));
-            }
+            // Canvas waterfall: server tells us how many bins per row and
+            // how deep the history is. Frequency labels above the canvas
+            // span the full active bandwidth (bw) centred on center_freq.
+            initWaterfall(data.num_bins, data.waterfall_depth);
+            setWaterfallFreqLabels(data.center_freq, data.bw);
 
-            // Update x values for annotations (frequency markers) with proper edge margins
-            var left_margin = Math.max(25, ofdm_symbol_size * 0.02); // At least 25 or 2% of width
-            var right_margin = Math.max(65, ofdm_symbol_size * 0.02); // At least 65 or 2% of width
-            
-            waterfallLayout.annotations[0].x = ofdm_symbol_size / 2 + ofdm_symbol_size / 50; // slightly centered to the right
-            waterfallLayout.annotations[1].x = left_margin;
-            waterfallLayout.annotations[2].x = ofdm_symbol_size / 4;
-            waterfallLayout.annotations[3].x = ofdm_symbol_size / 2;
-            waterfallLayout.annotations[4].x = ofdm_symbol_size * 3 / 4;
-            waterfallLayout.annotations[5].x = ofdm_symbol_size - right_margin;
-            waterfallLayout.annotations[1].text = `${freq_labels[0]}`;
-            waterfallLayout.annotations[2].text = `${freq_labels[1]}`;
-            waterfallLayout.annotations[3].text = `${freq_labels[2]}`;
-            waterfallLayout.annotations[4].text = `${freq_labels[3]}`;
-            waterfallLayout.annotations[5].text = `${freq_labels[4]}`;
-
-            waterfall_buffer = data.magnitude;
-            waterfall[0].z = waterfall_buffer;
             prbs_buffer = [new Array(data.num_prbs).fill(0)];
             prbs[0].z = prbs_buffer;
-            Plotly.newPlot('magnitude', waterfall, waterfallLayout);
             Plotly.newPlot('prbs', prbs, prbsLayout);
 
             if (data.show_controls) {
@@ -308,21 +605,13 @@
             });
             } // end show_controls
 
-            // PRB zone overlays — only drawn when control is active (PRB blocking enabled).
+            // PRB zone overlay — only drawn when control is active (PRB blocking enabled).
             // Without control there are no blocked PRBs so zone markers would be misleading.
+            // Just the guard-band boundary now; the dApp can block any PRB inside the BWP.
             if (data.show_prb_zones) {
-                var prb_protected_below = data.prb_protected_below;
                 var num_prbs = data.num_prbs;
                 Plotly.relayout('prbs', {
                     shapes: [
-                        // Protected zone: PRBs 0..prb_protected_below-1 (BWP/PRACH, never blacklisted)
-                        {
-                            type: 'rect',
-                            x0: -0.5, x1: prb_protected_below - 0.5,
-                            y0: -0.5, y1: 0.5,
-                            fillcolor: 'rgba(180,180,180,0.45)',
-                            line: { width: 1, color: '#999' }
-                        },
                         // Guard band boundary: dashed line after the last eligible PRB
                         {
                             type: 'line',
@@ -333,14 +622,7 @@
                     ],
                     annotations: prbsLayout.annotations.concat([
                         {
-                            x: prb_protected_below / 2, y: 1.15,
-                            xref: 'x', yref: 'paper',
-                            text: 'BWP/PRACH protected',
-                            showarrow: false,
-                            font: { size: 10, color: '#666' }
-                        },
-                        {
-                            x: (prb_protected_below + num_prbs) / 2, y: 1.15,
+                            x: num_prbs / 2, y: 1.15,
                             xref: 'x', yref: 'paper',
                             text: 'Spectrum sharing eligible',
                             showarrow: false,
@@ -358,7 +640,7 @@
             {
                 Plotly.newPlot("adaptive_noise_floor", adaptiveNoiseFloorData, adaptiveNoiseFloorLayout);
                 Plotly.relayout("adaptive_noise_floor", {
-                    'xaxis.range': [0, ofdm_symbol_size - 1]
+                    'xaxis.range': [0, data.num_bins - 1]
                 });
             }
 
@@ -410,28 +692,18 @@
                 emitLabel();
             }
 
-            // Dynamic preprocessing based on first_carrier_offset    
-            // The carrier frequency is in the middle PRB (including DC leak on some radios)
-            console.log("Initial values:", {
-                ofdm_symbol_size: ofdm_symbol_size,
-                first_carrier_offset: first_carrier_offset,
-                num_prbs: data.num_prbs
-            });
-            const num_consecutive_subcarriers_for_prb = 12; // Always 12 by LTE / NR standard
-            // Calculate the middle PRB position
-            var middle_prb_offset = data.num_prbs * num_consecutive_subcarriers_for_prb / 2;
-            console.log("Calculated middle_prb_offset:", middle_prb_offset);
-            
-            // Calculate slice points dynamically
-            // We want to show the spectrum centered around the middle PRB
-            // The interval to consider is from the middle prb offset to the first carrier offset
-            start_ignore = middle_prb_offset;
-            end_ignore = first_carrier_offset;
-
-            console.log("Slice points:", {
-                start_ignore: start_ignore,
-                end_ignore: end_ignore
-            });
+            // Populate sidebar defaults. dB range starts in static mode
+            // with the canonical defaults. Aggregation size comes from
+            // the dApp (default 14) so the UI matches whatever the
+            // server is currently applying.
+            dbMinInput.value = WATERFALL_MIN_DB;
+            dbMaxInput.value = WATERFALL_MAX_DB;
+            setDbMode('static');
+            if (typeof data.aggregation_size === 'number') {
+                aggInput.value = data.aggregation_size;
+            } else {
+                aggInput.value = 14;
+            }
 
             initialized = true;
         });
@@ -446,42 +718,245 @@
             flashBadge();
         });
 
-        socket.on('reset_waterfall', function () {
-            if (!initialized) return;
-            var rows = waterfall_buffer.length;
-            var cols = waterfall_buffer[0].length;
-            for (var i = 0; i < rows; i++) {
-                waterfall_buffer[i] = new Array(cols).fill(0);
-            }
-            Plotly.restyle('magnitude', { z: [waterfall_buffer] });
+        // --- Settings sidebar wiring ------------------------------------
+        // All controls are plain HTML; we just bind handlers here. The
+        // dB-mode and min/max are pure browser state (no server round
+        // trip). The aggregation size is round-tripped via socket.io so
+        // the dApp/Dashboard side actually applies it.
+        var sidebar = document.getElementById('settings_sidebar');
+        var dbStaticInputs = document.getElementById('db_static_inputs');
+        var dbMinInput = document.getElementById('db_min_input');
+        var dbMaxInput = document.getElementById('db_max_input');
+        var aggInput = document.getElementById('agg_input');
+
+        document.getElementById('settings_toggle').addEventListener('click', function () {
+            // Translate the panel into view; closed → open.
+            var open = sidebar.style.transform !== 'translateX(0%)';
+            sidebar.style.transform = open ? 'translateX(0%)' : 'translateX(100%)';
         });
+        document.getElementById('settings_close').addEventListener('click', function () {
+            sidebar.style.transform = 'translateX(100%)';
+        });
+
+        function pushDbToWorker() {
+            // Worker owns the authoritative dB state during render; we
+            // forward whenever the main thread changes its mind.
+            if (!renderWorker) return;
+            renderWorker.postMessage({
+                type: 'set_db',
+                mode: dbMode,
+                minDb: minDb,
+                maxDb: maxDb,
+            });
+        }
+
+        function setDbMode(mode) {
+            dbMode = mode;
+            // Static-mode inputs are hidden in EWMA mode (the values
+            // are now controlled by the auto-adapter, not the user).
+            dbStaticInputs.style.opacity = (mode === 'static') ? '1.0' : '0.4';
+            dbMinInput.disabled = (mode !== 'static');
+            dbMaxInput.disabled = (mode !== 'static');
+            pushDbToWorker();
+        }
+        document.getElementById('db_mode_static').addEventListener('change', function (e) {
+            if (e.target.checked) {
+                // Restore the last user-entered static values when
+                // re-entering static mode (EWMA may have drifted them).
+                var mn = parseFloat(dbMinInput.value);
+                var mx = parseFloat(dbMaxInput.value);
+                if (!isNaN(mn)) minDb = mn;
+                if (!isNaN(mx)) maxDb = mx;
+                setDbMode('static');
+            }
+        });
+        document.getElementById('db_mode_ewma').addEventListener('change', function (e) {
+            if (e.target.checked) setDbMode('ewma');
+        });
+
+        function applyDbInputs() {
+            if (dbMode !== 'static') return;
+            var mn = parseFloat(dbMinInput.value);
+            var mx = parseFloat(dbMaxInput.value);
+            if (isNaN(mn) || isNaN(mx) || mx <= mn) return;
+            minDb = mn;
+            maxDb = mx;
+            pushDbToWorker();
+        }
+        dbMinInput.addEventListener('change', applyDbInputs);
+        dbMaxInput.addEventListener('change', applyDbInputs);
+
+        function emitAggregation() {
+            var v = parseInt(aggInput.value, 10);
+            if (!isNaN(v) && v >= 1 && v <= 14) {
+                socket.emit('set_aggregation_size', v);
+            }
+        }
+        aggInput.addEventListener('change', emitAggregation);
+
+        socket.on('update_aggregation_size', function (n) {
+            // Server-side confirmation (also lets a future "external"
+            // change show up in the UI). Don't re-emit — would loop.
+            aggInput.value = n;
+        });
+
+        socket.on('reset_waterfall', function () {
+            if (!initialized || !renderWorker) return;
+            renderWorker.postMessage({ type: 'reset' });
+        });
+
+        // Magnitude updates arrive as binary Float32 batches on a dedicated
+        // event. Each batch can carry MULTIPLE rows concatenated (every
+        // UL slot the dApp captured between two server-side timer ticks
+        // becomes one row). The browser splits the batch into rows of
+        // length `waterfallWidth` and pushes each into the waterfall —
+        // so every captured slot ends up as a visible row, even though
+        // the network frames themselves arrive at the server timer rate.
+        //
+        // socket.io may deliver the payload as ArrayBuffer, Uint8Array,
+        // or Blob. We normalise to a fresh ArrayBuffer (so we can
+        // transfer ownership to the worker zero-copy) and forward.
+        //
+        // The render loop itself lives in the worker. We just count
+        // rows received here, count rows rendered + dropped from the
+        // worker's stats reply, and ack `client_done` after the
+        // worker confirms paint. The main thread does NO canvas work.
+        var _waterfallRowsReceived = 0;
+        var _waterfallRowsRendered = 0;
+        var _waterfallRowsDropped = 0;
+        var _waterfallDataAgeUs = null;
+
+        function forwardFrameToWorker(ab) {
+            if (waterfallWidth) {
+                // Row count is derivable from the payload size; subtract
+                // the 8-byte ageUs header to get the float32 region.
+                // 2 bytes per bin: wire format is Uint16 quantized dB.
+                var rowBytes = waterfallWidth * 2;
+                var rows = Math.floor((ab.byteLength - 8) / rowBytes);
+                if (rows > 0) _waterfallRowsReceived += rows;
+            }
+            // Transfer ownership — zero-copy on Chrome/Firefox.
+            renderWorker.postMessage({ type: 'frame', buffer: ab }, [ab]);
+        }
+
+        function handleMagnitudeBinary(buf) {
+            if (!workerReady || !renderWorker) {
+                // Frame arrived before initialize_plot finished — drop;
+                // the next one will arrive in <16 ms and will be
+                // forwarded normally.
+                return;
+            }
+            if (buf instanceof Blob) {
+                buf.arrayBuffer()
+                    .then(handleMagnitudeBinary)
+                    .catch(function (err) {
+                        console.error('[waterfall] Blob decode failed:', err);
+                    });
+                return;
+            }
+            var ab;
+            if (buf instanceof ArrayBuffer) {
+                ab = buf;
+            } else if (ArrayBuffer.isView(buf)) {
+                // The view aliases a buffer that may be shared with
+                // socket.io internals; slice into a fresh ArrayBuffer
+                // we can safely transfer ownership of.
+                ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+            } else {
+                return;
+            }
+            forwardFrameToWorker(ab);
+        }
+        socket.on('update_plot_mag', handleMagnitudeBinary);
+
+        function onWorkerMessage(ev) {
+            var msg = ev.data;
+            if (!msg) return;
+            if (msg.type === 'rendered') {
+                var stats = msg.stats || {};
+                _waterfallRowsRendered += stats.rendered || 0;
+                _waterfallRowsDropped += stats.dropped || 0;
+                if (typeof stats.ageUs === 'number') {
+                    _waterfallDataAgeUs = stats.ageUs;
+                }
+                // Mirror the worker's dB state back into the legend.
+                // The worker is authoritative for EWMA-mode min/max
+                // (they evolve frame-by-frame). For static mode the
+                // values are equal to what we set, so this is a no-op.
+                if (typeof stats.minDb === 'number') minDb = stats.minDb;
+                if (typeof stats.maxDb === 'number') maxDb = stats.maxDb;
+                if (typeof stats.dbMode === 'string') dbMode = stats.dbMode;
+                if (rangeLabelEl) {
+                    var modeTag = dbMode === 'ewma' ? ' · EWMA' : '';
+                    rangeLabelEl.textContent =
+                        'Magnitude · ' + minDb.toFixed(1)
+                        + ' … ' + maxDb.toFixed(1) + ' dB' + modeTag;
+                }
+                // Ack the server's gate AFTER the worker confirmed
+                // paint. Unlike the old design, this is driven by the
+                // worker's render cadence — not the main thread's rAF
+                // — so a busy main thread can't starve the ack flow.
+                socket.emit('client_done');
+            }
+        }
+
+        // --- visibility: drop-stats overlay + periodic console log.
+        // Sits in the bottom-right corner of the dashboard so you can
+        // see live whether anything is being dropped, without staring
+        // at the scrolling waterfall.
+        var _waterfallStatsEl = document.createElement('div');
+        _waterfallStatsEl.style.cssText = (
+            'position: fixed; right: 8px; bottom: 8px; ' +
+            'padding: 6px 10px; ' +
+            'background: rgba(0,0,0,0.7); color: #eee; ' +
+            'font: 11px/1.4 monospace; ' +
+            'border-radius: 4px; ' +
+            'pointer-events: none; z-index: 9999;'
+        );
+        _waterfallStatsEl.textContent = '[waterfall] waiting…';
+        document.body.appendChild(_waterfallStatsEl);
+
+        var _lastStatsT = performance.now();
+        var _lastReceived = 0;
+        var _lastRendered = 0;
+        var _lastDropped = 0;
+        setInterval(function () {
+            var now = performance.now();
+            var dt = (now - _lastStatsT) / 1000;
+            _lastStatsT = now;
+            var dReceived = _waterfallRowsReceived - _lastReceived;
+            var dRendered = _waterfallRowsRendered - _lastRendered;
+            var dDropped  = _waterfallRowsDropped  - _lastDropped;
+            _lastReceived = _waterfallRowsReceived;
+            _lastRendered = _waterfallRowsRendered;
+            _lastDropped  = _waterfallRowsDropped;
+
+            var renderRate = (dRendered / dt).toFixed(0);
+            var recvRate   = (dReceived / dt).toFixed(0);
+            var dropPct = _waterfallRowsReceived > 0
+                ? (100 * _waterfallRowsDropped / _waterfallRowsReceived).toFixed(2)
+                : '0.00';
+            var ageStr = (_waterfallDataAgeUs !== null)
+                ? (_waterfallDataAgeUs / 1000).toFixed(1) + ' ms (srv)'
+                : '—';
+            var line =
+                'recv=' + _waterfallRowsReceived +
+                '  rendered=' + _waterfallRowsRendered +
+                '  dropped=' + _waterfallRowsDropped +
+                ' (' + dropPct + '%)' +
+                '  age=' + ageStr + '\n' +
+                'rate: ' + recvRate + ' rows/s in, ' +
+                renderRate + ' rows/s out';
+            _waterfallStatsEl.textContent = line;
+
+        }, 2000);
 
         socket.on('update_plot', function (data) {
             if (!initialized) {
                 return;
             }
 
-            if ('magnitude' in data) {
-                // console.log("Magnitude is: ", data.magnitude)
-
-                var magnitude_length = data.magnitude.length;                
-                // Dynamic slicing based on calculated positions
-                let part1 = data.magnitude.slice(0, start_ignore);
-                // Ignore the middle section (guards symbols)
-                let part3 = data.magnitude.slice(end_ignore);
-                let magnitudeToShow = part3.concat(part1).reverse();
-                
-                // console.log("Parts lengths:", {
-                //     // part1_length: part1.length,
-                //     // part3_length: part3.length,
-                //     magnitudeToShow_length: magnitudeToShow.length
-                // });
-                
-                // Update waterfall plot
-                waterfall_buffer.pop();
-                waterfall_buffer.unshift(magnitudeToShow);
-                Plotly.restyle('magnitude', { z: [waterfall_buffer] });
-            } else if ('prb_list' in data) {
+            if ('prb_list' in data) {
                 // console.log("PRBs are: ", data.prb_list);
                 // We get a list of indexes to replace each time
                 prbs_buffer[0].fill(0);

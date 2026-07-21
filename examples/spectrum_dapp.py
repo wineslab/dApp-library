@@ -9,7 +9,11 @@ import time
 import logging
 
 from e3interface.e3_connector import E3LinkLayer, E3TransportLayer
-from spectrum.spectrum_dapp import SpectrumSharingDApp, compute_fft_size
+from spectrum.spectrum_dapp import (
+    SpectrumSharingDApp,
+    compute_fft_size,
+    make_periodic_toggle_callback,
+)
 from spectrum.threshold_detector import StaticThresholdDetector, AdaptiveThresholdDetector
 
 LOG_DIR = '/tmp/'
@@ -107,6 +111,11 @@ def main(args):
         num_subcarrier_spacing=args.num_subcarrier_spacing,
         sampling_threshold=args.sampling_threshold,
         max_samples_per_file=args.max_samples_per_file,
+        dashboard_aggregation_size=args.dashboard_aggregation_size,
+        sensing_only=args.sensing_only,
+        strict_sensing=args.strict_sensing,
+        min_sensing_symbols=args.min_sensing_symbols,
+        encoding_method=args.encoding_method,
         ground_truth=args.ground_truth,
         show_controls=args.show_controls,
         dapp_name="SpectrumSharing",
@@ -140,6 +149,23 @@ def main(args):
 
     dapp.send_subscription_request()
 
+    # Optional sensing-policy toggle.  When --toggle-period > 0, installs
+    # a periodic on/off toggle that flips the gNB's masked UL TDA
+    # selector via spectrum_sm ctrl_id=2.  Operator must have configured
+    # additional_ul_tdas in the gNB (e.g. "0:7") for the scheduler to
+    # have a short TDA to switch to.  See examples/README or the gNB
+    # boot log ([additional] tag) to verify.
+    if args.toggle_period > 0:
+        print(f"[INFO] Installing sensing-policy toggle: "
+              f"period={args.toggle_period}s "
+              f"n_slots={args.toggle_n_slots} "
+              f"mask_when_on=0x{args.toggle_mask:04x}")
+        dapp.set_sensing_policy_logic(make_periodic_toggle_callback(
+            period_s=args.toggle_period,
+            n_slots=args.toggle_n_slots,
+            mask_when_on=args.toggle_mask,
+        ))
+
     if args.timed:
         timer = threading.Thread(target=stop_program, args=(args.timed, dapp), daemon=False)
         timer.start()
@@ -168,7 +194,8 @@ if __name__ == "__main__":
     parser.add_argument('--save-iqs', action='store_true', default=False,
                         help="Save I/Q samples to SigMF files")
     parser.add_argument('--control', action='store_true', default=False,
-                        help="Send PRB blacklist control messages to the gNB")
+                        help="Send PRB-block control messages to the gNB when "
+                             "PRBs are detected above the noise threshold")
     parser.add_argument('--noise-floor-threshold', type=int, default=None,
                         help="Detection threshold in dB (static) or dB above noise floor (adaptive)")
     parser.add_argument('--use-adaptive-noise-floor', action='store_true', default=False,
@@ -221,6 +248,56 @@ if __name__ == "__main__":
     parser.add_argument('--show-controls', action='store_true', default=False,
                         help="Show tunable controls (sampling threshold) in the dashboard GUI. "
                              "Only meaningful with --demo-gui.")
+    parser.add_argument('--dashboard-aggregation-size', type=int, default=14,
+                        help="Number of input symbol rows to mean-fold into one dashboard row. "
+                             "14 = one row per UL slot (default), 1 = no aggregation. "
+                             "Adjustable at runtime from the sidebar.")
+    parser.add_argument('--encoding-method', type=str, default='asn1',
+                        choices=['asn1', 'json'],
+                        help="Wire encoding for Spectrum-* envelopes (default: asn1).")
+    parser.add_argument('--no-sensing-only', dest='sensing_only',
+                        action='store_false', default=True,
+                        help="Disable the sensing-window dashboard filter. By default the dApp "
+                             "subscribes to OAI-L2-KPM (RF=3) sensing ranges and slices the "
+                             "dashboard rows to sensing-PUSCH symbols; passing this flag "
+                             "shows every symbol of every slot instead.")
+    parser.add_argument('--strict-sensing', dest='strict_sensing',
+                        action='store_true', default=False,
+                        help="Stricter sensing filter: drop any slot whose sensing window "
+                             "doesn't cover the full slot (i.e. any UE PUSCH was granted "
+                             "in that slot). Eliminates UE CP/spectral bleed at the cost "
+                             "of a sparser waterfall under heavy UE traffic. Requires "
+                             "--sensing-only (the default).")
+    parser.add_argument('--min-sensing-symbols', type=int, default=1,
+                        help="Minimum number of kept symbols required to emit the slot to "
+                             "the dashboard. Default 1: display every slot that has any "
+                             "sensing symbol — keeps the waterfall scrolling even under "
+                             "heavy UE UL where the MAC scheduler leaves only one free "
+                             "symbol per slot. Set to 2 to drop the typical \"only sym 13 "
+                             "survived\" partial-sensing slots (evens out brightness at "
+                             "the cost of dashboard freezes under load). Set to 14 to "
+                             "require fully-clean slots (equivalent to "
+                             "--strict-sensing).")
+
+    # --- Optional sensing-policy toggle ----------------------------- #
+    # Drives the gNB's masked UL TDA selector via spectrum_sm ctrl_id=2.
+    # Disabled by default (toggle-period=0); set --toggle-period to a
+    # positive value to enable.  Requires additional_ul_tdas (e.g. "0:7")
+    # on the gNB so the scheduler has a short TDA to switch to.
+    parser.add_argument('--toggle-period', type=float, default=0.0,
+                        metavar='SECONDS',
+                        help="Toggle the gNB sensing policy on/off every N seconds "
+                             "(0 = disabled, default).  When > 0, alternates between "
+                             "installing the mask (active) and clearing it (deactivate).  "
+                             "Requires additional_ul_tdas configured on the gNB.")
+    parser.add_argument('--toggle-n-slots', type=int, default=20,
+                        help="numb_slots_frame of the gNB for the per-slot mask "
+                             "(mu=1 -> 20).  Must match the gNB exactly or the gNB "
+                             "will NACK the policy with an n_slots mismatch.")
+    parser.add_argument('--toggle-mask', type=lambda s: int(s, 0), default=0x3F80,
+                        metavar='HEX',
+                        help="14-bit symbol bitmap applied uniformly to every slot "
+                             "when the toggle is active (default 0x3F80 = syms 7..13).")
 
     args = parser.parse_args()
     print("Start dApp")
