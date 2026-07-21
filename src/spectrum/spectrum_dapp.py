@@ -26,7 +26,6 @@ from spectrum.e3_ran_buffers_reader import (
     SlotPointer,
     N_SC_PER_SLOT,
 )
-from spectrum.l2_kpm_reader import L2KpmIndication, SensingRange
 from spectrum.threshold_detector import (
     ThresholdDetector,
     StaticThresholdDetector,
@@ -223,28 +222,6 @@ class SpectrumSharingDApp(DApp):
     # Symbol mask upper bound (14-bit bitmap).
     SENSING_SYMBOL_MASK_MAX = 0x3FFF
 
-    # OAI-L2-KPM (RF=3): the MAC scheduler ships per-(sfn, slot) the
-    # time-frequency footprint of every sensing-PUSCH it injected. The
-    # dApp consumes this telemetry to mask its dashboard rows to the
-    # sensing-PUSCH symbols. Telemetry id 1 == "sensing_ranges" on
-    # the OAI side (openair2/E3AP/service_models/oai_l2_kpm_sm/).
-    L2_RAN_FUNCTION_ID = 3
-    L2_TELEMETRY_ID = [1]
-
-    # L2 cache size: bounded ring of recent (sfn, slot) → sensing-range
-    # entries to ride out L1 ↔ L2 arrival skew. Each entry is ~80 B so
-    # the total footprint is < 50 KB even at 512 entries.
-    #
-    # On-data mode produces ~5 entries per radio frame (4 UL + 1 mixed
-    # in the standard "DDDDDDDFUU" half-frame pattern) which at 30 kHz
-    # SCS is ~500 entries/sec. With cache=64 the TTL is only ~128 ms,
-    # which is comparable to L1↔L2 skew (MAC publishes at scheduling
-    # time, PHY publishes ~3 ms later via sl_ahead, plus jitter from
-    # the two ZMQ channels) and leads to a few percent no_match in
-    # the [L2-MATCH] log. 512 gives ~1 s of TTL — well above any
-    # realistic skew between the two SMs.
-    _L2_CACHE_MAX = 512
-    _L2_LOG_INTERVAL = 1024
 
     # SHM staleness threshold: if (recv_ts - producer_ts) exceeds this, the
     # gNB's FH ring has likely rotated past the row we're about to read,
@@ -466,12 +443,11 @@ class SpectrumSharingDApp(DApp):
         self._lat_last_log_t = 0.0
         self._lat_log_interval_s = 5.0
 
-        # L2-KPM (RF=3) sensing-range cache. L1 indications arrive with
-        # (sfn, slot); we look up the matching L2 entry here to decide
-        # which symbol rows of the slot's IQ are sensing-PUSCH. The L2
-        # producer (MAC scheduler) runs slightly ahead of the L1 producer
-        # (PHY UL slot processing), so by the time L1 arrives the matching
-        # L2 entry is usually already cached.
+        # Sensing ranges (the per-slot sensing-PUSCH time/frequency footprint)
+        # ride inline in the L1-KPM (RF=2) indication alongside the shm pointer,
+        # so the worker always has a correct, slot-local mask with no cross-SM
+        # correlation. The Spectrum SM (RF=1) owns PRB-block / sensing-policy
+        # control; the dApp subscribes to it so those controls are accepted.
         self.sensing_only = sensing_only
         # Strict mode: only display slots where the sensing window covers
         # EVERY symbol of the slot. Drops any slot where the MAC scheduler
@@ -506,18 +482,16 @@ class SpectrumSharingDApp(DApp):
                 "kept symbols to even out waterfall brightness)",
                 self.min_sensing_symbols,
             )
-        self._l2_cache: "OrderedDict[tuple[int, int], list[SensingRange]]" = OrderedDict()
-        self._l2_cache_lock = threading.Lock()
-        self._l2_received = 0
-        self._l1_matched_l2 = 0
-        self._l1_no_l2 = 0
-        self._l1_mask_from_embedded = 0
-        self._l1_mask_from_l2_cache = 0
-        self._l2_log_last = 0
+        # Sensing-coverage bookkeeping (how many L1 slots carried a non-empty
+        # sensing window), logged periodically and at shutdown.
+        self._sensing_slots_total = 0
+        self._sensing_slots_with_ranges = 0
+        self._sensing_log_last = 0
+        self._SENSING_LOG_INTERVAL = 1024
         dapp_logger.info(
             f"Sensing-window filter: {'enabled' if self.sensing_only else 'disabled'} "
-            f"(L2-KPM RF={self.L2_RAN_FUNCTION_ID} subscription always active; "
-            f"dashboard rows are masked to sensing-PUSCH symbols when enabled)"
+            f"(sensing ranges ride inline in the L1-KPM RF={self.RAN_FUNCTION_ID} "
+            f"indications; dashboard rows are masked to sensing-PUSCH symbols when enabled)"
         )
 
         self._detector_run_interval = 4
@@ -981,14 +955,21 @@ class SpectrumSharingDApp(DApp):
 
     @override
     def send_subscription_request(self, subscriptionTime=None, periodicity=None) -> bool:
-        """Subscribe to both L1-KPM (RF=2, IQ) and L2-KPM (RF=3, sensing
-        ranges). The base flow registers ``manage_subscription_response``
-        and the placeholder indication callback for the dApp once — both
-        responses go through the same dispatcher.
+        """Subscribe to the L1-KPM SM (RF=2, IQ + inline sensing ranges) and
+        the Spectrum SM (RF=1). The base flow registers
+        ``manage_subscription_response`` and the placeholder indication
+        callback for the dApp once — both responses go through the same
+        dispatcher.
 
-        Returns the L1 subscription's scheduled status; L2 is best-effort
-        (a gNB without L2-KPM SM will fail to register RF=3 but the dApp
-        still runs without the sensing-window filter).
+        The Spectrum SM (RF=1) is where sensing-range telemetry and the
+        PRB-block / sensing-policy controls live (L2-KPM was folded into it).
+        The subscription is control-only (empty telemetry list): it starts
+        the SM on the gNB so incoming controls are accepted rather than
+        NACKed as "SM not running", while sensing ranges keep arriving
+        inline on the L1-KPM (RF=2) indications.
+
+        Returns the L1 subscription's scheduled status; the Spectrum-SM
+        subscription is best-effort.
 
         The two requests are queued ~50 ms apart instead of back-to-back.
         With zero spacing libe3's setup-loop on the gNB only sees one of
@@ -1006,22 +987,23 @@ class SpectrumSharingDApp(DApp):
         # tap is gated on e3_kpm_sm_has_subscribers()).
         time.sleep(0.05)
 
-        l2_scheduled = self.e3_interface.send_subscription_request(
+        spectrum_scheduled = self.e3_interface.send_subscription_request(
             self.dapp_id,
-            self.L2_RAN_FUNCTION_ID,
-            self.L2_TELEMETRY_ID,
-            [],
+            self.PRB_CONTROL_RAN_FUNCTION_ID,  # Spectrum SM (RF=1)
+            [],  # control-only: no telemetry stream, just start the SM
+            [self.SPECTRUM_CONTROL_ID_PRB_BLOCK, self.SPECTRUM_CONTROL_ID_SENSING_POLICY],
             subscriptionTime,
             periodicity,
         )
-        if not l2_scheduled:
+        if not spectrum_scheduled:
             dapp_logger.warning(
-                f"L2-KPM RF={self.L2_RAN_FUNCTION_ID} subscription not scheduled; "
-                "dApp will operate without sensing-window filter"
+                f"Spectrum SM RF={self.PRB_CONTROL_RAN_FUNCTION_ID} subscription not "
+                "scheduled; PRB-block / sensing-policy controls may be NACKed by the gNB"
             )
         else:
             dapp_logger.debug(
-                f"Subscription request for RF={self.L2_RAN_FUNCTION_ID} scheduled"
+                f"Subscription request for Spectrum SM RF={self.PRB_CONTROL_RAN_FUNCTION_ID} "
+                "scheduled (control-only)"
             )
         return l1_scheduled
 
@@ -1245,57 +1227,22 @@ class SpectrumSharingDApp(DApp):
                     len(self._drop_window), 100.0 * drop_rate,
                 )
 
-    # ---- L2-KPM (RF=3) sensing-range cache -------------------------- #
-    # Three operations: cache an arriving L2 indication, look up by
-    # (sfn, slot) at L1-arrival time, tally hit/miss for ops logging.
-    # All three lock the small OrderedDict (~64 entries max).
+    # ---- Sensing-coverage bookkeeping ------------------------------- #
+    # Sensing ranges arrive inline in the L1-KPM (RF=2) indication, so there
+    # is no cross-SM correlation to do — just tally how many slots carried a
+    # non-empty sensing window for ops visibility.
 
-    def _cache_l2(self, sfn: int, slot: int, ranges: list) -> None:
-        key = (sfn, slot)
-        with self._l2_cache_lock:
-            self._l2_cache[key] = ranges
-            self._l2_cache.move_to_end(key)
-            while len(self._l2_cache) > self._L2_CACHE_MAX:
-                self._l2_cache.popitem(last=False)
-
-    def _lookup_l2(self, sfn: int, slot: int):
-        with self._l2_cache_lock:
-            return self._l2_cache.get((sfn, slot))
-
-    def _tally_l2_match(self, matched: bool, *, embedded: bool = True) -> None:
-        """Bookkeep whether an L1 slot found a non-zero sensing mask.
-
-        Now that the gNB's L1 indication carries sensing_symbol_mask
-        in-band (option B), a mask of 0 is a genuine "no sensing
-        window this slot" — DL portion of a mixed slot, or a slot with
-        no sensing reservations. So matched_L2 is really
-        "L1 slots that had any sensing data to filter on", not
-        "L1 slots that found a separate L2 indication".
-
-        ``embedded`` tracks whether the mask came from the L1 payload
-        (the new path) or from the L2-KPM cache fallback (the
-        compatibility path for older gNBs). Counters split so we can
-        verify the migration."""
-        if matched:
-            self._l1_matched_l2 += 1
-            if embedded:
-                self._l1_mask_from_embedded += 1
-            else:
-                self._l1_mask_from_l2_cache += 1
-        else:
-            self._l1_no_l2 += 1
-        total = self._l1_matched_l2 + self._l1_no_l2
-        if total > 0 and (total - self._l2_log_last) >= self._L2_LOG_INTERVAL:
-            self._l2_log_last = total
-            with self._l2_cache_lock:
-                cache_size = len(self._l2_cache)
-            match_pct = 100.0 * self._l1_matched_l2 / total
+    def _tally_sensing(self, has_ranges: bool) -> None:
+        self._sensing_slots_total += 1
+        if has_ranges:
+            self._sensing_slots_with_ranges += 1
+        total = self._sensing_slots_total
+        if (total - self._sensing_log_last) >= self._SENSING_LOG_INTERVAL:
+            self._sensing_log_last = total
+            pct = 100.0 * self._sensing_slots_with_ranges / total
             dapp_logger.info(
-                f"[L2-MATCH] L1_slots={total} matched_L2={self._l1_matched_l2} "
-                f"({match_pct:.1f}%) no_match={self._l1_no_l2} "
-                f"embedded={self._l1_mask_from_embedded} "
-                f"l2_fallback={self._l1_mask_from_l2_cache} "
-                f"L2_received={self._l2_received} cache_size={cache_size}"
+                f"[SENSING] L1_slots={total} with_ranges={self._sensing_slots_with_ranges} "
+                f"({pct:.1f}%)"
             )
 
     @staticmethod
@@ -1400,20 +1347,10 @@ class SpectrumSharingDApp(DApp):
 
     @override
     def _handle_indication(self, dapp_identifier: int, data: bytes):
-        """libe3 inbound-thread callback. The dApp is subscribed to two
-        SMs, so dispatch by payload shape:
-
-          - OAI-L1-KPM (RF=2): shm-pointer payload — heavy IQ pipeline.
-            Decoded via :class:`SlotPointer`.
-          - OAI-L2-KPM (RF=3): per-(sfn, slot) sensing ranges — cached
-            for correlation with L1 IQ. Decoded via :class:`L1KpmIndication`
-            (lightweight).
-
-        L1 is tried first: ``SlotPointer.from_bytes`` requires a strict
-        shm-pointer schema (``iq_samples`` key in JSON, shm_name OCTET
-        STRING in APER) so it returns ``None`` on RF=3 payloads. Only
-        on that None do we attempt the L2 decode — there is no schema
-        overlap that could confuse the two.
+        """libe3 inbound-thread callback. Telemetry arrives on the L1-KPM
+        SM (RF=2) as an shm-pointer payload carrying the IQ shm coordinates
+        and the slot's inline sensing ranges; decode it via
+        :class:`SlotPointer` and run the heavy IQ pipeline.
         """
         t = Timings(recv_ns=time.monotonic_ns())
         if not data:
@@ -1424,14 +1361,9 @@ class SpectrumSharingDApp(DApp):
             self._handle_l1_indication(p, t)
             return
 
-        l2 = L2KpmIndication.from_bytes(data)
-        if l2 is not None:
-            self._handle_l2_indication(l2)
-            return
-
         dapp_logger.info(
-            "[SPECTRUM] indication payload parsed as neither OAI-L1-KPM "
-            "(shm pointer) nor OAI-L2-KPM (sensing ranges); dropping"
+            "[SPECTRUM] indication payload did not parse as an L1-KPM shm "
+            "pointer; dropping"
         )
 
     def _handle_l1_indication(self, p: SlotPointer, t: Timings) -> None:
@@ -1439,14 +1371,9 @@ class SpectrumSharingDApp(DApp):
         symbol mask (already embedded in the L1 indication payload), and
         queue the bundle for the worker.
 
-        The sensing mask used to come from the L2-KPM cache and required
-        a (sfn, slot) lookup that frequently missed under ZMQ frame loss
-        and inbound-thread back-pressure (~25%-96% variance across runs).
-        Now it rides in the same indication as the shm pointer so the
-        worker always has a correct, slot-local mask. L2-KPM SM is still
-        used opportunistically to fill in if the embedded mask is 0
-        (e.g. when running against an older gNB that doesn't ship it
-        yet) — see _resolve_mask_bits below."""
+        The sensing ranges ride in the same L1-KPM indication as the shm
+        pointer, so the worker always has a correct, slot-local mask with no
+        cross-SM (sfn, slot) correlation."""
         t.decoded_ns = time.monotonic_ns()
         t.producer_ts_ns = p.timestamp_ns
 
@@ -1492,17 +1419,9 @@ class SpectrumSharingDApp(DApp):
             self._diag_log_full_slot(p, iq_3d)
         self._count_handled(p, iq_symbols)
 
-        # Use the ranges embedded in this L1 indication. L2-KPM cache is
-        # still consulted as a fallback so the dApp keeps working
-        # against an older gNB that doesn't fill sensingRanges.
+        # Sensing ranges are embedded inline in this L1 indication.
         ranges = p.sensing_ranges
-        l2_fallback_used = False
-        if not ranges:
-            cached = self._lookup_l2(p.sfn, p.slot)
-            if cached:
-                ranges = tuple(cached)
-                l2_fallback_used = True
-        self._tally_l2_match(bool(ranges), embedded=not l2_fallback_used)
+        self._tally_sensing(bool(ranges))
 
         # [MASK] diag: dump ranges per slot for the first 20 then every 200.
         if (self._shm_indications_handled <= 20
@@ -1524,22 +1443,6 @@ class SpectrumSharingDApp(DApp):
         self._enqueue_for_worker(
             (iq_symbols, p.timestamp_ns, p.sfn, p.slot, ranges, t)
         )
-
-    def _handle_l2_indication(self, l2: L2KpmIndication) -> None:
-        """Cache an L2-KPM sensing-range indication keyed by (sfn, slot).
-        L1 arrivals for the same slot will pick this up via _lookup_l2."""
-        self._cache_l2(l2.sfn, l2.slot, l2.sensing_ranges)
-        self._l2_received += 1
-        if self._l2_received <= 5 or (self._l2_received % 500) == 0:
-            sample = ", ".join(
-                f"(sym {r.start_symbol}+{r.num_symbols}, "
-                f"rb {r.rb_start}+{r.rb_size})"
-                for r in l2.sensing_ranges
-            ) or "—"
-            dapp_logger.info(
-                f"[L2-KPM] sfn={l2.sfn} slot={l2.slot} beam={l2.beam} "
-                f"ranges={len(l2.sensing_ranges)}: {sample}"
-            )
 
     def _enqueue_for_worker(self, item) -> None:
         """Hand a fully-read slot to the indication-worker thread. If the
@@ -1799,9 +1702,8 @@ class SpectrumSharingDApp(DApp):
         """Worker-thread processing of an already-shm-read slot. iq_symbols
         is a list of flat float32 [I,Q,I,Q,...] arrays (one per symbol of
         antenna 0), already rescaled by 1/fp16_beta upstream. ``ranges``
-        is the tuple of SensingRange shipped in the same L1 indication
-        (or back-filled from the L2-KPM cache for compat); drives the
-        2D dashboard filter when ``self.sensing_only`` is enabled."""
+        is the tuple of SensingRange shipped inline in the same L1 indication;
+        drives the 2D dashboard filter when ``self.sensing_only`` is enabled."""
         _ = (sfn, slot)  # reserved for future per-slot diagnostics
         now = time.monotonic()
         n_sym = len(iq_symbols)
@@ -2171,18 +2073,13 @@ class SpectrumSharingDApp(DApp):
             total_sent,
         )
 
-        total_l1 = self._l1_matched_l2 + self._l1_no_l2
-        denom_l1 = max(1, total_l1)
+        denom_sensing = max(1, self._sensing_slots_total)
         dapp_logger.info(
-            "[L2-MATCH] final stats: L1_slots=%d matched=%d (%.2f%%) "
-            "no_match=%d embedded=%d l2_fallback=%d L2_received=%d "
+            "[SENSING] final stats: L1_slots=%d with_ranges=%d (%.2f%%) "
             "sensing_only=%s strict_sensing=%s strict_dropped=%d",
-            total_l1, self._l1_matched_l2,
-            100.0 * self._l1_matched_l2 / denom_l1,
-            self._l1_no_l2,
-            self._l1_mask_from_embedded, self._l1_mask_from_l2_cache,
-            self._l2_received, self.sensing_only,
-            self.strict_sensing, self._strict_dropped,
+            self._sensing_slots_total, self._sensing_slots_with_ranges,
+            100.0 * self._sensing_slots_with_ranges / denom_sensing,
+            self.sensing_only, self.strict_sensing, self._strict_dropped,
         )
 
         try:
