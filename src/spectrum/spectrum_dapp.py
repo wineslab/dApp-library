@@ -31,6 +31,14 @@ from spectrum.threshold_detector import (
 # as dapp:schema_version in the SigMF global block. Co-versioned with
 # spear-lake/docs/DAPP_SIGMF_FIELDS.yml (schema 1.0.0), which consolidated the
 # ecosystem on the single `dapp:` namespace and retired the legacy `spear:` one.
+#
+# Known, accepted conformance gap (tracked in #82): two required 1.0.0 fields are
+# not yet fully satisfied and are deferred to that issue —
+#   - `dapp:iq_sample_count_start` is not written (needs a session-global,
+#     non-resetting sample counter), and
+#   - `dapp:effective_sample_rate` currently lands in the global block rather than
+#     per-capture-segment (needs the libiqsaver per-segment metadata passthrough).
+# We knowingly keep the 1.0.0 stamp until #82 lands rather than churn the version.
 DAPP_SIGMF_SCHEMA_VERSION = "1.0.0"
 
 # OFDM symbols per slot in 5G NR with normal cyclic prefix. Describes the time
@@ -189,17 +197,25 @@ class SpectrumSharingDApp(DApp):
                 # OFDM resource-grid geometry (spear-lake DAPP_SIGMF_FIELDS.yml,
                 # §6.5) is emitted as component dims — a loader reconstructs the
                 # occupied bandwidth as n_prbs * n_sc_per_prb. n_ants=1: the dApp
-                # captures one antenna stream. layout / samples_per_slot are
-                # intentionally omitted: they describe the compact resource-grid
-                # interleaving (as the aerial recorder emits), but each on-disk
-                # record here is fft_size *padded* FFT bins for a single symbol
-                # (fft_size != n_prbs * n_sc_per_prb), so that reshape does not
-                # apply and would misdescribe the bytes.
+                # captures one antenna stream.
+                #
+                # dapp:layout is intentionally omitted: it describes the compact
+                # resource-grid interleaving (as the aerial recorder emits), but
+                # each on-disk record here is fft_size *padded* FFT bins for a
+                # single symbol (fft_size != n_prbs * n_sc_per_prb), so that
+                # reshape does not apply and would misdescribe the bytes.
+                #
+                # dapp:samples_per_slot, however, MUST be emitted explicitly:
+                # omitting it is not neutral — the registry tells readers to
+                # default it to n_ants*n_symbols*n_prbs*n_sc_per_prb, which would
+                # slice these padded records at the wrong boundary. The truthful
+                # on-disk slot stride is fft_size (padded) * n_symbols (n_ants=1).
                 domain="frequency",
                 n_prbs=self.num_prbs,
                 n_sc_per_prb=self.num_consecutive_subcarriers_for_prb,
                 n_ants=1,
                 n_symbols=NUM_OFDM_SYMBOLS_PER_SLOT,
+                samples_per_slot=self.fft_size * NUM_OFDM_SYMBOLS_PER_SLOT,
                 subcarrier_spacing_khz=self.num_subcarrier_spacing,
                 sampling_threshold=self.sampling_threshold,
                 max_samples_per_file=self.max_samples_per_file,

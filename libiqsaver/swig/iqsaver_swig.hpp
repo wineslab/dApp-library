@@ -33,7 +33,7 @@ struct IQSaverConfigSwig {
     // Negative => unset.
     long long   max_samples_per_file = -1;
     double      rotation_interval    = -1.0;
-    std::string extension_namespace  = "spear";
+    std::string extension_namespace  = "dapp";
     std::string extra_metadata_json  = "{}";
 };
 

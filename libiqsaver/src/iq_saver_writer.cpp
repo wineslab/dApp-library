@@ -29,6 +29,12 @@ namespace {
 
 constexpr const char* kSigMFVersion = "1.0.0";
 
+// Fallback version stamped in the SigMF `core:extensions` entry for the
+// configured extension namespace when the caller supplies no `schema_version`
+// in extra metadata. Callers (e.g. the spectrum dApp) that co-version their
+// namespace pass an explicit `schema_version`, which takes precedence.
+constexpr const char* kDefaultExtensionVersion = "1.0.0";
+
 double now_seconds() {
     using namespace std::chrono;
     return duration_cast<duration<double>>(
@@ -189,6 +195,18 @@ struct IQSaverWriter::Impl {
         if (!config.hw_info.empty()) {
             record_global["core:hw"] = config.hw_info;
         }
+        // Declare the extension namespace we stamp so SigMF readers know which
+        // extension the `<ns>:*` fields belong to. Version is co-versioned with
+        // the namespace: use the caller's `schema_version` when provided, else
+        // fall back to kDefaultExtensionVersion. `optional=false` — the `<ns>:*`
+        // geometry/domain fields are required to interpret the recording.
+        record_global["core:extensions"] = json::array(
+            {json{{"name", config.extension_namespace},
+                  {"version",
+                   extra_metadata.value(
+                       "schema_version",
+                       std::string(kDefaultExtensionVersion))},
+                  {"optional", false}}});
         for (auto it = extra_metadata.begin(); it != extra_metadata.end();
              ++it) {
             if (it.key() == "sampling_threshold") continue;

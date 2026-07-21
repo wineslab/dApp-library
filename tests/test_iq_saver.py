@@ -204,7 +204,14 @@ def test_sigmf_compliance():
         assert global_info.get('core:datatype') == 'cf32_le', f"datatype mismatch: {global_info.get('core:datatype')}"
         assert global_info.get('dapp:num_prbs') == 106, f"num_prbs mismatch: {global_info.get('dapp:num_prbs')}"
         assert global_info.get('dapp:fft_size') == 2048, f"fft_size mismatch: {global_info.get('dapp:fft_size')}"
-        
+        # The writer declares the extension namespace it stamps via core:extensions.
+        extensions = global_info.get('core:extensions')
+        assert extensions, f"core:extensions missing: {extensions}"
+        dapp_ext = next((e for e in extensions if e.get('name') == 'dapp'), None)
+        assert dapp_ext is not None, f"no 'dapp' entry in core:extensions: {extensions}"
+        assert dapp_ext.get('version'), f"dapp extension version missing: {dapp_ext}"
+        assert dapp_ext.get('optional') is False, f"dapp extension should be required: {dapp_ext}"
+
         print(f"\nGlobal Metadata:")
         print(f"  Sample Rate: {global_info.get('core:sample_rate')} Hz")
         print(f"  Data Type: {global_info.get('core:datatype')}")
@@ -352,6 +359,10 @@ def test_spectrum_dapp_integration_pattern():
             fft_size=2048,
             num_prbs=num_prbs,
             subcarrier_spacing_khz=num_subcarrier_spacing,
+            # Truthful on-disk slot stride, exactly as SpectrumSharingDApp emits
+            # it: padded fft_size * n_symbols (n_ants=1). Explicit so readers do
+            # not fall back to the compact-grid default and mis-slice.
+            samples_per_slot=2048 * 14,
             sampling_threshold=5
         )
         
@@ -394,7 +405,10 @@ def test_spectrum_dapp_integration_pattern():
         for meta_file in meta_files:
             base = str(meta_file).replace('.sigmf-meta', '')
             recording = sigmf.fromfile(base)
-            assert recording.get_global_info().get('dapp:num_prbs') == num_prbs
+            g = recording.get_global_info()
+            assert g.get('dapp:num_prbs') == num_prbs
+            assert g.get('dapp:samples_per_slot') == 2048 * 14, (
+                f"samples_per_slot mismatch: {g.get('dapp:samples_per_slot')}")
         
         print(f"✓ All recordings are valid SigMF files")
         print("✓ Test 7 PASSED\n")

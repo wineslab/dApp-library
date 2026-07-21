@@ -19,7 +19,7 @@ struct IQSaverConfig {
     std::string filename;
     std::optional<uint64_t> max_samples_per_file;
     std::optional<double>   rotation_interval;
-    std::string extension_namespace = "spear";
+    std::string extension_namespace = "dapp";
     // JSON-encoded object of extra global metadata fields. Keys whose names
     // do not already start with `core:` or `<extension_namespace>:` are
     // prefixed with `<extension_namespace>:` before being written.
