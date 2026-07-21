@@ -344,150 +344,72 @@
     },
     "E3-PDU": {
       "type": "object",
+      "required": ["type", "id"],
       "properties": {
-        "id": {
-          "$ref": "#/$defs/E3-MessageID"
-        },
-        "msg": {
-          "oneOf": [
-            {
-              "type": "object",
-              "properties": {
-                "setupRequest": {
-                  "$ref": "#/$defs/E3-SetupRequest"
-                }
-              },
-              "required": [
-                "setupRequest"
-              ],
-              "additionalProperties": false
-            },
-            {
-              "type": "object",
-              "properties": {
-                "setupResponse": {
-                  "$ref": "#/$defs/E3-SetupResponse"
-                }
-              },
-              "required": [
-                "setupResponse"
-              ],
-              "additionalProperties": false
-            },
-            {
-              "type": "object",
-              "properties": {
-                "subscriptionRequest": {
-                  "$ref": "#/$defs/E3-SubscriptionRequest"
-                }
-              },
-              "required": [
-                "subscriptionRequest"
-              ],
-              "additionalProperties": false
-            },
-            {
-              "type": "object",
-              "properties": {
-                "subscriptionDelete": {
-                  "$ref": "#/$defs/E3-SubscriptionDelete"
-                }
-              },
-              "required": [
-                "subscriptionDelete"
-              ],
-              "additionalProperties": false
-            },
-            {
-              "type": "object",
-              "properties": {
-                "subscriptionResponse": {
-                  "$ref": "#/$defs/E3-SubscriptionResponse"
-                }
-              },
-              "required": [
-                "subscriptionResponse"
-              ],
-              "additionalProperties": false
-            },
-            {
-              "type": "object",
-              "properties": {
-                "indicationMessage": {
-                  "$ref": "#/$defs/E3-IndicationMessage"
-                }
-              },
-              "required": [
-                "indicationMessage"
-              ],
-              "additionalProperties": false
-            },
-            {
-              "type": "object",
-              "properties": {
-                "dAppControlAction": {
-                  "$ref": "#/$defs/E3-DAppControlAction"
-                }
-              },
-              "required": [
-                "dAppControlAction"
-              ],
-              "additionalProperties": false
-            },
-            {
-              "type": "object",
-              "properties": {
-                "dAppReport": {
-                  "$ref": "#/$defs/E3-DAppReport"
-                }
-              },
-              "required": [
-                "dAppReport"
-              ],
-              "additionalProperties": false
-            },
-            {
-              "type": "object",
-              "properties": {
-                "xAppControlAction": {
-                  "$ref": "#/$defs/E3-XAppControlAction"
-                }
-              },
-              "required": [
-                "xAppControlAction"
-              ],
-              "additionalProperties": false
-            },
-            {
-              "type": "object",
-              "properties": {
-                "releaseMessage": {
-                  "$ref": "#/$defs/E3-ReleaseMessage"
-                }
-              },
-              "required": [
-                "releaseMessage"
-              ],
-              "additionalProperties": false
-            },
-            {
-              "type": "object",
-              "properties": {
-                "messageAck": {
-                  "$ref": "#/$defs/E3-MessageAck"
-                }
-              },
-              "required": [
-                "messageAck"
-              ],
-              "additionalProperties": false
-            }
+        "type": {
+          "type": "string",
+          "enum": [
+            "setupRequest",
+            "setupResponse",
+            "subscriptionRequest",
+            "subscriptionDelete",
+            "subscriptionResponse",
+            "indicationMessage",
+            "dAppControlAction",
+            "dAppReport",
+            "xAppControlAction",
+            "releaseMessage",
+            "messageAck"
           ]
-        }
+        },
+        "id": { "$ref": "#/$defs/E3-MessageID" },
+        "timestamp": { "type": "integer", "minimum": 0 }
       },
-      "required": [
-        "id",
-        "msg"
+      "oneOf": [
+        {
+          "properties": { "type": { "const": "setupRequest" } },
+          "allOf": [ { "$ref": "#/$defs/E3-SetupRequest" } ]
+        },
+        {
+          "properties": { "type": { "const": "setupResponse" } },
+          "allOf": [ { "$ref": "#/$defs/E3-SetupResponse" } ]
+        },
+        {
+          "properties": { "type": { "const": "subscriptionRequest" } },
+          "allOf": [ { "$ref": "#/$defs/E3-SubscriptionRequest" } ]
+        },
+        {
+          "properties": { "type": { "const": "subscriptionDelete" } },
+          "allOf": [ { "$ref": "#/$defs/E3-SubscriptionDelete" } ]
+        },
+        {
+          "properties": { "type": { "const": "subscriptionResponse" } },
+          "allOf": [ { "$ref": "#/$defs/E3-SubscriptionResponse" } ]
+        },
+        {
+          "properties": { "type": { "const": "indicationMessage" } },
+          "allOf": [ { "$ref": "#/$defs/E3-IndicationMessage" } ]
+        },
+        {
+          "properties": { "type": { "const": "dAppControlAction" } },
+          "allOf": [ { "$ref": "#/$defs/E3-DAppControlAction" } ]
+        },
+        {
+          "properties": { "type": { "const": "dAppReport" } },
+          "allOf": [ { "$ref": "#/$defs/E3-DAppReport" } ]
+        },
+        {
+          "properties": { "type": { "const": "xAppControlAction" } },
+          "allOf": [ { "$ref": "#/$defs/E3-XAppControlAction" } ]
+        },
+        {
+          "properties": { "type": { "const": "releaseMessage" } },
+          "allOf": [ { "$ref": "#/$defs/E3-ReleaseMessage" } ]
+        },
+        {
+          "properties": { "type": { "const": "messageAck" } },
+          "allOf": [ { "$ref": "#/$defs/E3-MessageAck" } ]
+        }
       ]
     }
   }

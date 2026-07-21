@@ -155,8 +155,20 @@ class ZMQConnector(E3Connector):
     def setup_inbound_connection(self):
         self.inbound_socket = self.context.socket(zmq.SUB)
         self.inbound_socket.setsockopt_string(zmq.SUBSCRIBE, "") # subscribe to all the messages
-        # HWM-bounded queue, not ZMQ_CONFLATE: CONFLATE keeps only the last
-        # message, so indications arriving while a slow callback runs are dropped.
+        # NEVER set ZMQ_CONFLATE on this socket. It forces a recv buffer of
+        # depth 1, silently overwriting any message that arrives between two
+        # recv() calls. Multiple SMs (L1-KPM, L2-KPM, …) publish on the same
+        # PUB channel, so with CONFLATE each L1 indication evicts any L2
+        # indication that arrived just before it (and vice versa). The
+        # symptom is a non-deterministic match-rate drop in the dApp's
+        # [L2-MATCH] log that varies wildly across identical runs (25% /
+        # 87% / 96%) — every loss interval correlates with how often the
+        # inbound thread happens to be busy in the L1 shm-read path when
+        # an L2 frame lands.
+        # Use a normal HWM-bounded queue instead. 4096 entries is well
+        # above the worst-case backlog we'd ever see (the inbound thread
+        # drains at the wire arrival rate; if it falls behind by 4096
+        # frames something is much more wrong than a queue can fix).
         self.inbound_socket.setsockopt(zmq.RCVHWM, 4096)
         self.inbound_socket.connect(self.inbound_endpoint)
 
@@ -180,8 +192,15 @@ class ZMQConnector(E3Connector):
 
     def setup_outbound_connection(self):
         self.outbound_socket = self.context.socket(zmq.PUB)
-        # HWM-bounded queue, not ZMQ_CONFLATE: each outbound message (control,
-        # report, subscription, release) is a distinct event, none are droppable.
+        # NEVER set ZMQ_CONFLATE on this socket either. The outbound channel
+        # carries control actions, dApp reports, subscription requests, and
+        # release messages — each one is a distinct event, none are stream
+        # updates where "only the latest matters". CONFLATE here silently
+        # ate one of the two back-to-back subscription requests we send at
+        # startup (L1-KPM RF=2 + L2-KPM RF=3), which is what forced the
+        # 50 ms sleep workaround in spectrum_dapp's send_subscription_request.
+        # With a normal HWM that workaround is no longer strictly required
+        # (left in place for belt-and-braces).
         self.outbound_socket.setsockopt(zmq.SNDHWM, 4096)
         self.outbound_socket.connect(self.outbound_endpoint)
     
@@ -189,8 +208,20 @@ class ZMQConnector(E3Connector):
         self.outbound_socket.send(payload)
 
     def dispose(self):
+        """Shutdown — force LINGER=0 so context.term() doesn't block.
+
+        Without linger=0, destroy() honours each socket's own LINGER. PUB
+        and SUB default to -1 (wait forever for queued messages to drain),
+        and a REQ caught mid-poll on SIGINT can also keep term() waiting.
+        Result: the dApp hangs on Ctrl-C inside zmq's term() and the user
+        has to ^C twice.
+
+        Forcing linger=0 makes shutdown immediate: any unsent messages are
+        discarded, all sockets close, and term() returns. That's the right
+        trade-off at shutdown — we don't care about delivering buffered
+        outbound messages to a gNB we're walking away from."""
         if hasattr(self, "context"):
-            self.context.destroy()
+            self.context.destroy(linger=0)
 
 class POSIXConnector(E3Connector):
     CHUNK_SIZE = 8192

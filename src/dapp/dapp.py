@@ -127,8 +127,11 @@ class DApp(ABC):
         else:
             dapp_logger.warning(f"Subscription response not positive: {data}")
 
-    def send_subscription_request(self, subscriptionTime: int | None = None, periodicity: int | None = None) -> bool: 
+    def send_subscription_request(self, subscriptionTime: int | None = None, periodicity: int | None = None) -> bool:
         self.e3_interface.add_subscription_callback(self.dapp_id, self.manage_subscription_response)
+
+        self.e3_interface.add_indication_callback(self.dapp_id, 0, self._handle_indication)
+        self.e3_interface.add_xapp_control_callback(self.dapp_id, 0, self._handle_xapp_control)
         dapp_logger.debug(f"Subscription callbacks: {self.e3_interface.subscription_callbacks}")
         scheduled = self.e3_interface.send_subscription_request(
                 self.dapp_id,

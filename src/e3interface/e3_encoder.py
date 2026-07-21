@@ -177,32 +177,51 @@ class AsnE3Encoder(E3Encoder):
 
 
 class JsonE3Encoder(E3Encoder):
-    """JSON implementation of E3 message encoding/decoding using JSON Schema validation"""
+    """JSON implementation of E3 message encoding/decoding using JSON Schema validation.
 
-    _PDU_BINARY_FIELDS = {
-        "indicationMessage": ["protocolData"],
-        "dAppControlAction": ["actionData"],
-        "dAppReport": ["reportData"],
-        "xAppControlAction": ["xAppControlData"]
+    Wire format matches libe3's json_encoder (src/encoder/json_encoder.cpp):
+    a single flat object ``{"type": "<pduType>", "id": N, "timestamp": ..., ...fields}``.
+    Binary payload fields (protocolData / actionData / reportData / xAppControlData /
+    ranFunctionData) are carried as inline JSON objects/arrays when the underlying
+    bytes parse as structured JSON; otherwise the bytes are wrapped in a
+    ``{"__hex__": "<hex>"}`` sentinel so they survive a roundtrip.
+    """
+
+    # Top-level PDU types that carry an opaque binary payload field on the wire.
+    _BINARY_PAYLOAD_FIELDS = {
+        "indicationMessage": "protocolData",
+        "dAppControlAction": "actionData",
+        "dAppReport": "reportData",
+        "xAppControlAction": "xAppControlData",
     }
-    
+
     def __init__(self, json_schema_path: str = None):
         super().__init__()
         self.encoding_type = "json"
-        
+
         # Load JSON Schema definitions
         if json_schema_path is None:
             json_schema_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "defs", "e3.json")
-        
+
         with open(json_schema_path, 'r') as f:
             self.schema = json.load(f)
 
         # Build a jsonschema validator with a registry derived from the schema's $defs.
+        #
+        # The validator's "current resource" determines how `#/$defs/...` refs
+        # resolve. If we pass `self.schema["$defs"]["E3-PDU"]` directly as the
+        # validator schema, `#/$defs/E3-MessageID` resolves *within* that
+        # subschema (which has no $defs) and explodes with PointerToNowhere.
+        # Instead, point the validator at a $ref against our registered URI:
+        # the registry then resolves the ref against the full schema (which
+        # does have $defs), and downstream refs continue to work.
         self._validator_cls = jsonschema.validators.validator_for(self.schema)
         self._validator_cls.check_schema(self.schema)
+        registry = self._build_registry()
+        base_uri = self.schema.get("$id", "urn:e3-schema")
         self._pdu_validator = self._validator_cls(
-            self.schema["$defs"]["E3-PDU"],
-            registry=self._build_registry(),
+            {"$ref": f"{base_uri}#/$defs/E3-PDU"},
+            registry=registry,
         )
 
     def _build_registry(self):
@@ -221,7 +240,53 @@ class JsonE3Encoder(E3Encoder):
         return referencing.Registry().with_resource(base_uri, resource)
 
     # ------------------------------------------------------------------
-    # Binary-field helpers
+    # Adaptive payload helpers (mirror libe3 json_encoder.cpp:bytes_to_json_payload)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _bytes_to_payload(data):
+        """Embed raw bytes as inline JSON if they parse as a structured value;
+        otherwise wrap in the ``{"__hex__": ...}`` sentinel."""
+        if data is None:
+            return {}
+        if not isinstance(data, (bytes, bytearray, memoryview)):
+            # Already structured (dict/list/etc.) — pass through.
+            return data
+        b = bytes(data)
+        if not b:
+            return {}
+        try:
+            parsed = json.loads(b.decode("utf-8"))
+            if isinstance(parsed, (dict, list)):
+                return parsed
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            pass
+        return {"__hex__": b.hex()}
+
+    @staticmethod
+    def _payload_to_bytes(payload) -> bytes:
+        """Reverse of ``_bytes_to_payload``. Always returns bytes."""
+        if payload is None:
+            return b""
+        if isinstance(payload, (bytes, bytearray, memoryview)):
+            return bytes(payload)
+        if isinstance(payload, dict) and isinstance(payload.get("__hex__"), str):
+            return bytes.fromhex(payload["__hex__"])
+        if isinstance(payload, (dict, list)):
+            return json.dumps(payload).encode("utf-8")
+        if isinstance(payload, str):
+            # Legacy: tolerate plain hex strings (older nested wire format).
+            try:
+                return bytes.fromhex(payload)
+            except ValueError:
+                return payload.encode("utf-8")
+        return json.dumps(payload).encode("utf-8")
+
+    # ------------------------------------------------------------------
+    # Inner-SM binary-field helpers (used by spectrum_dapp.py for fields
+    # like ``iqSamples`` / ``blockedPRBs`` inside the SM payload).
+    # Not used by encode_pdu/decode_pdu; the outer PDU's binary fields use
+    # the adaptive helpers above instead.
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -237,8 +302,8 @@ class JsonE3Encoder(E3Encoder):
     @classmethod
     def _convert_binary_fields(cls, message_type: str, data: dict,
                                 converter, expected_types,
-                                binary_fields: dict = None) -> dict:
-        fields = (binary_fields or cls._PDU_BINARY_FIELDS).get(message_type, [])
+                                binary_fields: dict) -> dict:
+        fields = binary_fields.get(message_type, [])
         for field in fields:
             if field in data and isinstance(data[field], expected_types):
                 data[field] = converter(data[field])
@@ -263,31 +328,63 @@ class JsonE3Encoder(E3Encoder):
         )
 
     # ------------------------------------------------------------------
-    # Core encode / decode
+    # Core encode / decode (flat wire format)
     # ------------------------------------------------------------------
 
     def _validate_pdu(self, pdu: dict) -> None:
         self._pdu_validator.validate(pdu)
 
     def encode_pdu(self, pdu_type: str, pdu_data: dict) -> bytes:
-        """Encode a PDU message to JSON bytes"""
-        msg_id = pdu_data.pop("id", None)
+        """Encode a PDU message to JSON bytes (flat wire format).
+
+        ``pdu_data`` is a flat dict of fields. ``id`` is required; ``timestamp``
+        is optional and defaults to 0 (matches libe3's encode behavior for
+        unset timestamps). Any binary payload field for the given pdu_type is
+        translated through ``_bytes_to_payload``.
+        """
+        # Work on a shallow copy so we don't mutate the caller's dict.
+        body = dict(pdu_data)
+        msg_id = body.pop("id", None)
         if msg_id is None:
             raise ValueError("Missing required PDU message id")
-        pdu = {"id": msg_id, "msg": {pdu_type: pdu_data}}
+        timestamp = body.pop("timestamp", 0)
+
+        binary_field = self._BINARY_PAYLOAD_FIELDS.get(pdu_type)
+        if binary_field and binary_field in body:
+            body[binary_field] = self._bytes_to_payload(body[binary_field])
+
+        pdu = {"type": pdu_type, "id": msg_id, "timestamp": timestamp}
+        pdu.update(body)
         self._validate_pdu(pdu)
         return json.dumps(pdu).encode('utf-8')
 
     def decode_pdu(self, data: bytes) -> tuple:
-        """Decode JSON bytes to PDU message, returns (pdu_type, pdu_data, msg_id)"""
+        """Decode flat JSON bytes to PDU message.
 
+        Returns ``(pdu_type, pdu_data, msg_id)`` where ``pdu_data`` contains
+        the remaining fields with binary payloads converted back to ``bytes``.
+        """
         pdu = json.loads(data.decode('utf-8'))
         self._validate_pdu(pdu)
-        msg_id = pdu.get("id")
-        msg = pdu.get("msg", {})
-        pdu_type = next(iter(msg))
-        pdu_data = self._convert_binary_fields(pdu_type, msg[pdu_type], self.hex_to_bytes, str)
-        return (pdu_type, pdu_data, msg_id)
+
+        pdu_type = pdu.pop("type", None)
+        if pdu_type is None:
+            raise ValueError("PDU missing required 'type' discriminator")
+        msg_id = pdu.pop("id", None)
+        if msg_id is None:
+            raise ValueError("PDU missing required 'id' field")
+        pdu.pop("timestamp", None)
+
+        binary_field = self._BINARY_PAYLOAD_FIELDS.get(pdu_type)
+        if binary_field and binary_field in pdu:
+            pdu[binary_field] = self._payload_to_bytes(pdu[binary_field])
+
+        if pdu_type == "setupResponse":
+            for func in pdu.get("ranFunctionList", []) or []:
+                if "ranFunctionData" in func:
+                    func["ranFunctionData"] = self._payload_to_bytes(func["ranFunctionData"])
+
+        return (pdu_type, pdu, msg_id)
 
     # ------------------------------------------------------------------
     # Message factories
@@ -345,7 +442,7 @@ class JsonE3Encoder(E3Encoder):
             "dAppIdentifier": dappId,
             "ranFunctionIdentifier": ranFunctionId,
             "controlIdentifier": controlId,
-            "actionData": self.bytes_to_hex(actionData)
+            "actionData": actionData,
         })
 
     def create_indication_message(self, msgId: int, dappId: int = 1, ranFunctionId: int = 1,
@@ -355,7 +452,7 @@ class JsonE3Encoder(E3Encoder):
             "id": msgId,
             "dAppIdentifier": dappId,
             "ranFunctionIdentifier": ranFunctionId,
-            "protocolData": self.bytes_to_hex(protocolData)
+            "protocolData": protocolData,
         })
 
     def create_dapp_report(self, msgId: int, dappId: int = 1, ranFunctionId: int = 1,
@@ -365,7 +462,7 @@ class JsonE3Encoder(E3Encoder):
             "id": msgId,
             "dAppIdentifier": dappId,
             "ranFunctionIdentifier": ranFunctionId,
-            "reportData": self.bytes_to_hex(reportData)
+            "reportData": reportData,
         })
 
     def create_release_message(self, msgId: int, dappId: int) -> bytes:
