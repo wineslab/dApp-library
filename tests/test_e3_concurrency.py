@@ -25,7 +25,7 @@ def test_concurrent_add_remove_during_dispatch():
     """Churning the callback dict from one thread while another dispatches must
     not raise 'dictionary changed size during iteration'."""
     iface = _bare_interface()
-    iface.add_indication_callback(1, 999, lambda d, x: None)  # steady entry
+    iface.add_indication_callback(1, 999, lambda d, rf, x: None)  # steady entry
 
     stop = threading.Event()
     errors = []
@@ -33,7 +33,7 @@ def test_concurrent_add_remove_during_dispatch():
     def dispatcher():
         try:
             while not stop.is_set():
-                iface._handle_indication_data(1, b"payload")
+                iface._handle_indication_data(1, 2, b"payload")
         except Exception as e:  # noqa: BLE001 - record any race for the assert
             errors.append(e)
 
@@ -41,7 +41,7 @@ def test_concurrent_add_remove_during_dispatch():
     t.start()
     try:
         for i in range(3000):
-            iface.add_indication_callback(1, i, lambda d, x: None)
+            iface.add_indication_callback(1, i, lambda d, rf, x: None)
             iface.remove_indication_callback(1, i)
     finally:
         stop.set()
@@ -54,12 +54,12 @@ def test_dispatch_invokes_registered_callbacks():
     """Basic functional check that dispatch reaches the matching callbacks only."""
     iface = _bare_interface()
     hits = []
-    iface.add_indication_callback(1, 1, lambda d, x: hits.append((d, x)))
-    iface.add_indication_callback(2, 1, lambda d, x: hits.append(("other", x)))
+    iface.add_indication_callback(1, 1, lambda d, rf, x: hits.append((d, rf, x)))
+    iface.add_indication_callback(2, 1, lambda d, rf, x: hits.append(("other", rf, x)))
 
-    iface._handle_indication_data(1, b"abc")
+    iface._handle_indication_data(1, 2, b"abc")
 
-    assert hits == [(1, b"abc")]
+    assert hits == [(1, 2, b"abc")]
 
 
 if __name__ == "__main__":

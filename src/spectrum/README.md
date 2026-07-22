@@ -12,7 +12,7 @@ gNB PHY ── L1-KPM SM (RF=2) ──► E3 indication: shm pointer + validSymb
    └─ Spectrum SM (RF=1) ──► E3 indication: shm ref (shmWriteIdx, nRanges)
                                   └► dApp reads ranges from /e3_l2_sensing ring
 dApp: magnitude ─► detector (masked adaptive noise floor) ─► PRB blacklist control (RF=1)
-   └► ZMQ PUB (per-slot u8 power) ─► subcarrier_visualizer.py ─► browser (WebGL waterfall)
+   └► ZMQ PUB (per-slot u8 power) ─► subcarrier_visualizer.py ─► browser (WebGL2 waterfall)
 ```
 
 ## Service models (both ASN.1/APER and JSON)
@@ -39,11 +39,14 @@ history (not fed as zeros), so ambient UE PRBs don't skew the floor.
 ## Visualizer
 
 `--demo-gui` binds a ZMQ PUB and (by default) spawns the standalone
-`visualization/subcarrier/subcarrier_visualizer.py` (Flask + WebSocket + WebGL2)
-on `--viz-web-port` (5001). The dApp publishes one multipart frame per slot
-(`subcarrier_power|sfn|slot|n_ant|n_sym|n_sc|u8|db_min|db_max|...` + u8 power);
-see `visualization/subcarrier_pub.py`. Use `--external-viz` to feed an
-already-running visualizer.
+`visualization/subcarrier/subcarrier_visualizer.py` (Flask + WebSocket + WebGL2,
+R8 textures via `texStorage2D`) on `--viz-web-port` (5001). The dApp publishes one
+multipart frame per slot (`subcarrier_power|sfn|slot|n_ant|n_sym|n_sc|u8|db_min|
+db_max|det=…|det_n=…|det_thr=…` + u8 power, plus a detection-mask frame when the
+detector has flagged PRBs); see `visualization/subcarrier_pub.py`. The render
+grid width follows the active carrier (`--num-prbs`×12 subcarriers, e.g. 1272 for
+106 PRB), so the waterfall renders on any bandwidth. Use `--external-viz` to feed
+an already-running visualizer.
 
 ## Robustness
 

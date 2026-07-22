@@ -1,6 +1,6 @@
-import warnings
-
 import numpy as np
+
+_NAN32 = np.float32(np.nan)
 
 class AdaptiveNoiseFloor:
   """
@@ -41,8 +41,10 @@ class AdaptiveNoiseFloor:
     """
     if iq_buffer.shape[0] != self.n:
       raise ValueError(f"Expected buffer of length {self.n}, got {iq_buffer.shape[0]}")
+    if valid_mask is not None and valid_mask.shape[0] != self.n:
+      raise ValueError(f"Expected valid_mask of length {self.n}, got {valid_mask.shape[0]}")
 
-    row = iq_buffer if valid_mask is None else np.where(valid_mask, iq_buffer, np.nan)
+    row = iq_buffer if valid_mask is None else np.where(valid_mask, iq_buffer, _NAN32)
     np.copyto(self._buffer[self._head], row, casting="unsafe")
     self._head = (self._head + 1) % self.x
     self._count += 1
@@ -60,11 +62,16 @@ class AdaptiveNoiseFloor:
     if self._count < self.x:
       return None
 
-    with warnings.catch_warnings():
-      warnings.simplefilter("ignore", RuntimeWarning)  # all-NaN bins
-      floor = np.nanmedian(self._buffer, axis=0).astype(np.float32)
-    # Bins with no valid samples in the window never trigger detection.
-    floor[np.isnan(floor)] = np.inf
+    # Bins with no valid sample in the window get +inf (never trigger). Compute
+    # the median only over columns that have at least one valid sample: this
+    # avoids nanmedian's "All-NaN slice" RuntimeWarning entirely, so there is no
+    # per-call warnings-filter mutation and no process-global state change.
+    floor = np.full(self.n, np.inf, dtype=np.float32)
+    has_valid = np.any(~np.isnan(self._buffer), axis=0)
+    if has_valid.any():
+      floor[has_valid] = np.nanmedian(
+          self._buffer[:, has_valid], axis=0
+      ).astype(np.float32)
     return floor
 
   def reset(self) -> None:

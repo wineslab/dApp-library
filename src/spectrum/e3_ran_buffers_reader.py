@@ -167,10 +167,12 @@ class SlotPointer:
                 fh_write_index=int(iq["fhWriteIndex"]),
                 sfn=int(decoded["sfn"]),
                 slot=int(decoded["slot"]),
-                cell_id=int(decoded.get("cellId") or 0),
-                n_rx_ant=int(decoded.get("nRxAnt") or N_ANTS),
+                cell_id=int(decoded.get("cellId", 0)),
+                n_rx_ant=int(decoded.get("nRxAnt", N_ANTS)),
                 timestamp_ns=int(decoded.get("timestamp", 0)),
-                valid_symbol_mask=int(decoded.get("validSymbolMask") or 0x3FFF),
+                # validSymbolMask is INTEGER(0..16383) OPTIONAL; 0 is legal
+                # (all symbols DL/guard). `or 0x3FFF` would flip it to all-valid.
+                valid_symbol_mask=int(decoded.get("validSymbolMask", 0x3FFF)),
             )
         except (KeyError, TypeError, ValueError):
             return None
@@ -274,8 +276,11 @@ class E3RanBuffersReader:
         self.close()
         try:
             self.open()
-        except OSError:
-            pass  # gNB gone; caller's lazy-open retries later
+        except (OSError, ValueError, RuntimeError, struct.error):
+            # gNB gone or mid-recreate: the shm_open→ftruncate window exposes a
+            # 0-byte / short / version-inconsistent segment. Caller's lazy-open
+            # retries later; don't let it crash the read loop.
+            pass
         return True
 
     @property

@@ -151,7 +151,7 @@ class DApp(ABC):
         pass
 
     @abstractmethod
-    def _handle_indication(self, dapp_identifier: int, data: bytes):
+    def _handle_indication(self, dapp_identifier: int, ran_function_id: int, data: bytes):
         # This in the future might become a class
         pass
 

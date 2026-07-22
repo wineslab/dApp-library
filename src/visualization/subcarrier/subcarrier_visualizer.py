@@ -77,6 +77,14 @@ VIZ_COMPRESS_BITS = max(1, min(8, int(os.environ.get('VIZ_COMPRESS_BITS', '8')))
 VIZ_FLOOR_DELTA   = max(0, int(os.environ.get('VIZ_FLOOR_DELTA', '8')))             # u8 steps above floor to keep (0 = off)
 VIZ_ZLIB_LEVEL    = max(1, min(9, int(os.environ.get('VIZ_ZLIB_LEVEL', '6'))))
 
+# Full-resolution grid width. The dApp publishes num_prbs*12 subcarrier columns
+# (e.g. 106 PRB -> 1272), so the visualizer must size its WebGL resources and the
+# frame-acceptance gate to the *active* bandwidth, not a fixed 273-PRB grid — a
+# mismatch makes every frame fail the N_SC%nSc divisor gate and nothing renders.
+# Injected into the page as __N_SC__/__N_PRBS__; driven by --num-prbs.
+VIZ_SC_PER_PRB = 12
+VIZ_NUM_PRBS   = int(os.environ.get('VIZ_NUM_PRBS', '273'))
+
 # --- End-to-end pacing (browser-feedback shedding; default ON) ----------------
 # A proxy/ingress between the viz and the browser hides the slow hop from the
 # viz's own socket, so socket-level back-pressure can't see it. Instead we pace
@@ -1104,7 +1112,7 @@ const perf = { workerMs: 0, workerN: 0, mainMs: 0, mainN: 0,
     // when the dApp publishes aggregated PRB / slot data.
     const N_ANTS    = 1;     // dApp now publishes only antenna 0
     const N_SYMBOLS = 14;
-    const N_SC      = 3276;
+    const N_SC      = __N_SC__;  // server-injected: num_prbs*12 for the active bandwidth
     const N_ROWS    = 512;
     const N_STREAMS = __N_STREAMS__;  // parallel WS connections (frame-interleave); server-injected
     const COMPRESS  = (__COMPRESS__ === 1);  // server-injected: WS batches are deflate-compressed (VIZ_COMPRESS)
@@ -1351,7 +1359,7 @@ function parseMsg(buf){
       if(detTag===1){ if(powerOff+powerLen+3>buf.byteLength) break; detN=dv.getUint16(powerOff+powerLen+1,true); trailerLen=3+detN; if(powerOff+powerLen+trailerLen>buf.byteLength) break; }
       off=powerOff+powerLen+trailerLen;
       if(nAnt!==N_ANTS) continue;
-      if(nSym!==1&&nSym!==N_SYMBOLS) continue;
+      if(nSym<1||nSym>N_SYMBOLS) continue;  // accept mixed-slot frames (e.g. 4 sym), not just 1 or full-slot
       if(nSc===0||(N_SC%nSc)!==0||nSc>N_SC) continue;
       if(detTag!==0&&detTag!==1) continue;
       if(detTag===1&&detN!==N_SC&&detN!==(N_SC/12)) continue;
@@ -1551,7 +1559,7 @@ onmessage=function(e){
 
 // --- Spectrum density (fosphor-style persistence) ---
 (function() {
-    const N_ANTS = 1, N_SYMBOLS = 14, N_SC = 3276;
+    const N_ANTS = 1, N_SYMBOLS = 14, N_SC = __N_SC__;
     const N_BINS = 256;                  // dB resolution of the accumulation FBO
     const DB_MIN = -110, DB_MAX = -10;   // dBFS window matching the waterfall
     const DB_SPAN = DB_MAX - DB_MIN;
@@ -2172,7 +2180,7 @@ void main() {
     const pause = document.getElementById('viz-pause-btn');
     const pHelp = document.getElementById('viz-pause-help');
     const xaxis = document.getElementById('wf-xaxis');
-    const N_PRBS = 273, SC_PER_PRB = 12, N_SC = N_PRBS * SC_PER_PRB;
+    const N_PRBS = __N_PRBS__, SC_PER_PRB = 12, N_SC = N_PRBS * SC_PER_PRB;
 
     function applyZoom() {
         let lo = parseInt(zMin && zMin.value, 10);
@@ -2249,10 +2257,17 @@ void main() {
 _ctrl_lock = threading.Lock()
 _ctrl_socket = None
 _ctrl_endpoint = "tcp://localhost:5560"
+# When None, no REP server owns the control port (e.g. the Python dApp doesn't
+# bind one). We must NOT connect to 5560 then: on a shared host that is the
+# co-resident C++ dApp's REP, so a /block/apply would send a real UL+DL PRB
+# block to the gNB via the wrong agent. Disabled → routes report unavailable.
+_ctrl_enabled = True
 
 
 def _ctrl_request(payload, timeout_ms=2000):
     global _ctrl_socket
+    if not _ctrl_enabled:
+        return {"ok": False, "error": "control not available (no dApp REP bound)"}
     with _ctrl_lock:
         if _ctrl_socket is None:
             ctx = zmq.Context.instance()
@@ -2390,7 +2405,9 @@ def insi_logo():
 def index():
     return render_template_string(
         HTML_TEMPLATE.replace('__N_STREAMS__', str(N_STREAMS))
-                     .replace('__COMPRESS__', '1' if VIZ_COMPRESS else '0'))
+                     .replace('__COMPRESS__', '1' if VIZ_COMPRESS else '0')
+                     .replace('__N_SC__', str(VIZ_NUM_PRBS * VIZ_SC_PER_PRB))
+                     .replace('__N_PRBS__', str(VIZ_NUM_PRBS)))
 
 
 def _resolve_ssl_context(cert, key, script_dir):
@@ -2447,8 +2464,18 @@ if __name__ == '__main__':
                         help='dApp recording control port (default: 5560)')
     parser.add_argument('--ctrl-host', type=str, default='localhost',
                         help='dApp recording control host (default: localhost)')
+    parser.add_argument('--num-prbs', type=int, default=VIZ_NUM_PRBS,
+                        help='Active carrier PRB count; sets the grid width to '
+                             'num_prbs*12 subcarriers (default: %(default)s)')
     args = parser.parse_args()
 
+    # Size the render grid to the active bandwidth before the page is served.
+    VIZ_NUM_PRBS = args.num_prbs
+
+    # --ctrl-port <= 0 disables the control proxy (no REP to talk to). This is
+    # the default when the Python dApp spawns us, since it binds no REP and 5560
+    # may belong to a co-resident C++ dApp.
+    _ctrl_enabled = args.ctrl_port > 0
     _ctrl_endpoint = f"tcp://{args.ctrl_host}:{args.ctrl_port}"
 
     threading.Thread(target=zmq_receiver, args=(args.zmq_port,), daemon=True).start()

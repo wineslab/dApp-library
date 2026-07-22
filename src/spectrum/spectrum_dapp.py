@@ -228,10 +228,11 @@ class SpectrumSharingDApp(DApp):
     # Fallback staleness bound until the FH ring header is read (see _shm_staleness_ns).
     _SHM_STALENESS_NS_DEFAULT = 50_000_000
 
-    # PRBs around the DC subcarrier that exhibit leakage artefacts and must
-    # be excluded from both reports and control messages.
-    DC_LEAKAGE_PRB_LOW = 50
-    DC_LEAKAGE_PRB_HIGH = 55
+    # PRBs on each side of the carrier centre (DC subcarrier) that exhibit
+    # leakage artefacts and must be excluded from reports and control messages.
+    # The band itself is derived from num_prbs in __init__ (DC sits at the
+    # centre), so it tracks the active bandwidth instead of hardcoding 106 PRB.
+    DC_LEAKAGE_GUARD_PRBS = 3
 
     # Defaults below assume: BW ≈ 40 MHz, center 3.6192 GHz, do_SRS=0 on
     # the gNB. FFT size is 2048 (or 1536 with USRP -E sampling). Noise-
@@ -250,8 +251,7 @@ class SpectrumSharingDApp(DApp):
                  fp16_beta: float = 1.0 / 2048.0,
                  sensing_only: bool = True,
                  strict_sensing: bool = False,
-                 min_sensing_symbols: int = 1,
-                 dashboard_aggregation_size: int = 14, **kwargs):
+                 min_sensing_symbols: int = 1, **kwargs):
         super().__init__(dapp_name=dapp_name, dapp_version=dapp_version, vendor=vendor,
                          e3ap_protocol_version=e3ap_protocol_version, link=link,
                          transport=transport, encoding_method=encoding_method, **kwargs)
@@ -272,6 +272,12 @@ class SpectrumSharingDApp(DApp):
         # gNB radio configuration
         self.num_consecutive_subcarriers_for_prb: int = 12  # Fixed by LTE/NR standard
         self.num_prbs = num_prbs
+        # DC-leakage guard band, centred on the carrier's DC subcarrier
+        # (PRB num_prbs//2), clamped to the carrier. Derived from num_prbs so
+        # e.g. a 273-PRB carrier strips PRBs around 136, not the hardcoded 50-55.
+        _dc_center = self.num_prbs // 2
+        self.DC_LEAKAGE_PRB_LOW = max(0, _dc_center - self.DC_LEAKAGE_GUARD_PRBS)
+        self.DC_LEAKAGE_PRB_HIGH = min(self.num_prbs - 1, _dc_center + self.DC_LEAKAGE_GUARD_PRBS)
         self.num_subcarrier_spacing = num_subcarrier_spacing  # subcarrier spacing in kHz
         self.ofdm_symbol_size = num_prbs * self.num_consecutive_subcarriers_for_prb
         self.bw = (self.ofdm_symbol_size * self.num_subcarrier_spacing * 1e3)  # Hz
@@ -386,12 +392,16 @@ class SpectrumSharingDApp(DApp):
         self.control = control
         dapp_logger.info(f"Control is {'not ' if not self.control else ''}active")
 
-        # PRB-block bookkeeping: the set of PRBs currently blocked on the gNB.
-        # The gNB install is additive, so while interference persists we send
-        # only the PRBs that are NEW relative to this set; when a detection
-        # cycle comes back clean we send an empty list (clear) so the
-        # scheduler regains the full band. Also reset by clear_prb_blocks().
-        self._prb_block_sent = set()
+        # PRB-block bookkeeping. The gNB install is REPLACE, not additive, so
+        # whatever we send becomes the full gNB block set. Two independent
+        # sources feed it — the detection loop and xApp control overrides — so
+        # each change re-sends the reconciled union; a source that clears must
+        # not wipe the other's PRBs. All three sets are mutated from both the
+        # indication worker and operator/xApp threads, so guard with a lock.
+        self._prb_block_lock = threading.Lock()
+        self._prb_block_detect = set()  # contribution from the detection loop
+        self._prb_block_xapp = set()    # contribution from xApp overrides
+        self._prb_block_sent = set()    # what is currently installed on the gNB
 
         self.energyGui = kwargs.get('energyGui', False)
         self.iqPlotterGui = kwargs.get('iqPlotterGui', False)
@@ -446,10 +456,11 @@ class SpectrumSharingDApp(DApp):
         self._lat_log_interval_s = 5.0
 
         # Sensing ranges (the per-slot sensing-PUSCH time/frequency footprint)
-        # ride inline in the L1-KPM (RF=2) indication alongside the shm pointer,
-        # so the worker always has a correct, slot-local mask with no cross-SM
-        # correlation. The Spectrum SM (RF=1) owns PRB-block / sensing-policy
-        # control; the dApp subscribes to it so those controls are accepted.
+        # arrive on the Spectrum SM (RF=1) as Spectrum-SensingIndication and are
+        # cached by (sfn,slot) in _sensing_cache. The L1-KPM (RF=2) handler then
+        # looks them up for the matching IQ slot — an explicit cross-SM
+        # correlation. RF=1 also owns PRB-block / sensing-policy control; the
+        # dApp subscribes to it so those controls are accepted.
         self.sensing_only = sensing_only
         # Strict mode: only display slots where the sensing window covers
         # EVERY symbol of the slot. Drops any slot where the MAC scheduler
@@ -492,8 +503,10 @@ class SpectrumSharingDApp(DApp):
         self._SENSING_LOG_INTERVAL = 1024
         dapp_logger.info(
             f"Sensing-window filter: {'enabled' if self.sensing_only else 'disabled'} "
-            f"(sensing ranges ride inline in the L1-KPM RF={self.RAN_FUNCTION_ID} "
-            f"indications; dashboard rows are masked to sensing-PUSCH symbols when enabled)"
+            f"(sensing ranges arrive on the Spectrum SM RF={self.PRB_CONTROL_RAN_FUNCTION_ID}, "
+            f"are cached by (sfn,slot), and correlated to the matching L1-KPM "
+            f"RF={self.RAN_FUNCTION_ID} IQ slot; dashboard rows are masked to sensing-PUSCH "
+            f"symbols when enabled)"
         )
 
         self._detector_run_interval = 4
@@ -534,12 +547,18 @@ class SpectrumSharingDApp(DApp):
                 bw=self.bw, center_freq=self.center_freq,
             )
 
+        # Latest detector output, overlaid on every published waterfall frame.
+        # Detection runs every _detector_run_interval slots but the waterfall
+        # publishes every slot, so we cache the mask/threshold between runs.
+        self._last_det_mask = None
+        self._last_det_thr = None
         if self.dashboard:
             from visualization.subcarrier_pub import SubcarrierPublisher
 
             self.demo = SubcarrierPublisher(
                 zmq_port=int(kwargs.get('viz_zmq_port', 5559)),
                 web_port=int(kwargs.get('viz_web_port', 5001)),
+                num_prbs=self.num_prbs,
                 spawn_viz=not kwargs.get('external_viz', False),
             )
 
@@ -689,31 +708,67 @@ class SpectrumSharingDApp(DApp):
             inner=control_data,
         )
 
+    def _reconcile_prb_blocks(self, *, detect: set | None = None,
+                              xapp: set | None = None,
+                              update_sampling: bool = False) -> None:
+        """Recompute the union of all PRB-block sources and, if it changed,
+        push the FULL set to the gNB (install is REPLACE, not additive).
+
+        Thread-safe: the detection worker (``detect=``) and operator/xApp
+        threads (``xapp=``) both call this. Sending only a delta would let one
+        source's change unblock PRBs the other still wants blocked, so we always
+        re-send the reconciled union.
+        """
+        with self._prb_block_lock:
+            if detect is not None:
+                self._prb_block_detect = set(detect)
+            if xapp is not None:
+                self._prb_block_xapp = set(xapp)
+            desired = self._prb_block_detect | self._prb_block_xapp
+            if desired == self._prb_block_sent:
+                return
+            blocked = sorted(desired)
+            control_payload = self.create_prb_block_control(
+                blocked_prbs=blocked, update_sampling=update_sampling
+            )
+            self.e3_interface.schedule_control(
+                dappId=self.dapp_id,
+                ranFunctionId=self.PRB_CONTROL_RAN_FUNCTION_ID,
+                controlId=self.SPECTRUM_CONTROL_ID_PRB_BLOCK,
+                actionData=control_payload,
+            )
+            self._prb_block_sent = set(desired)
+        dapp_logger.info(
+            "PRB block set updated: %d PRB(s) installed (detect=%d, xApp=%d)",
+            len(blocked), len(self._prb_block_detect), len(self._prb_block_xapp),
+        )
+
     def clear_prb_blocks(self) -> bool:
-        """Explicitly clear ALL sticky PRB blocks on the gNB.
+        """Unconditionally clear ALL PRB blocks on the gNB.
 
-        This is the deliberate "tell the gNB otherwise" action for the
-        sticky-block model: it sends an empty blacklistedPRBs list (which the
-        gNB treats as a full UL+DL clear via set_prb_block_mask(NULL)) and
-        resets the local sticky set so subsequent detections re-block from
-        scratch.
-
-        Not called automatically anywhere — wire it to an operator action
-        (dashboard control, signal handler, REST hook, etc.). Returns True
-        if the clear was queued, False if the dApp isn't connected.
+        Sends an empty blacklistedPRBs list (the gNB treats this as a full
+        UL+DL clear via set_prb_block_mask(NULL)) and resets every source set so
+        subsequent detections re-block from scratch. Sent unconditionally — even
+        when this instance's own ``_prb_block_sent`` is empty — because a prior
+        dApp instance may have died with blocks still installed on the sticky
+        gNB. Called once at startup (see send_subscription_request) and available
+        as an operator action. Returns True if the clear was queued.
         """
         if not getattr(self, "dapp_id", None):
             dapp_logger.warning("clear_prb_blocks: dApp not connected; dropping")
             return False
-        n = len(self._prb_block_sent)
-        control_payload = self.create_prb_block_control(blocked_prbs=[])
-        self.e3_interface.schedule_control(
-            dappId=self.dapp_id,
-            ranFunctionId=self.PRB_CONTROL_RAN_FUNCTION_ID,
-            controlId=self.SPECTRUM_CONTROL_ID_PRB_BLOCK,
-            actionData=control_payload,
-        )
-        self._prb_block_sent.clear()
+        with self._prb_block_lock:
+            n = len(self._prb_block_sent)
+            self._prb_block_detect.clear()
+            self._prb_block_xapp.clear()
+            control_payload = self.create_prb_block_control(blocked_prbs=[])
+            self.e3_interface.schedule_control(
+                dappId=self.dapp_id,
+                ranFunctionId=self.PRB_CONTROL_RAN_FUNCTION_ID,
+                controlId=self.SPECTRUM_CONTROL_ID_PRB_BLOCK,
+                actionData=control_payload,
+            )
+            self._prb_block_sent.clear()
         dapp_logger.info(f"clear_prb_blocks: explicit UL+DL clear sent (was {n} PRB(s))")
         return True
 
@@ -948,19 +1003,38 @@ class SpectrumSharingDApp(DApp):
         # tap is gated on e3_kpm_sm_has_subscribers()).
         time.sleep(0.05)
 
-        spectrum_scheduled = self.e3_interface.send_subscription_request(
-            self.dapp_id,
-            self.PRB_CONTROL_RAN_FUNCTION_ID,  # Spectrum SM (RF=1)
-            [self.SPECTRUM_TELEMETRY_ID_SENSING],  # sensing-range telemetry
-            [self.SPECTRUM_CONTROL_ID_PRB_BLOCK, self.SPECTRUM_CONTROL_ID_SENSING_POLICY],
-            subscriptionTime,
-            periodicity,
-        )
-        if not spectrum_scheduled:
+        # The Spectrum SM (RF=1) is not optional: without it _sensing_cache
+        # stays empty forever (every slot then detects unmasked) and the
+        # PRB-block / sensing-policy controls are silently dropped gNB-side
+        # because they target an unsubscribed function id. Retry a few times
+        # against the slow-joiner window, then fail the whole subscription.
+        spectrum_scheduled = False
+        for attempt in range(3):
+            spectrum_scheduled = self.e3_interface.send_subscription_request(
+                self.dapp_id,
+                self.PRB_CONTROL_RAN_FUNCTION_ID,  # Spectrum SM (RF=1)
+                [self.SPECTRUM_TELEMETRY_ID_SENSING],  # sensing-range telemetry
+                [self.SPECTRUM_CONTROL_ID_PRB_BLOCK, self.SPECTRUM_CONTROL_ID_SENSING_POLICY],
+                subscriptionTime,
+                periodicity,
+            )
+            if spectrum_scheduled:
+                break
             dapp_logger.warning(
                 f"Spectrum SM RF={self.PRB_CONTROL_RAN_FUNCTION_ID} subscription not "
-                "scheduled; sensing telemetry and controls may be unavailable"
+                f"scheduled (attempt {attempt + 1}/3); retrying"
             )
+            time.sleep(0.05)
+        if not spectrum_scheduled:
+            dapp_logger.error(
+                f"Spectrum SM RF={self.PRB_CONTROL_RAN_FUNCTION_ID} subscription failed; "
+                "sensing telemetry and PRB/sensing-policy controls would be unavailable"
+            )
+            return False
+        if self.control:
+            # Drop any sticky PRB blocks a previous dApp instance left installed
+            # on the gNB before this instance starts blocking from a clean slate.
+            self.clear_prb_blocks()
         return l1_scheduled
 
     def _decode_spectrum_message(self, message_type: str, data: bytes) -> dict:
@@ -1184,9 +1258,9 @@ class SpectrumSharingDApp(DApp):
                 )
 
     # ---- Sensing-coverage bookkeeping ------------------------------- #
-    # Sensing ranges arrive inline in the L1-KPM (RF=2) indication, so there
-    # is no cross-SM correlation to do — just tally how many slots carried a
-    # non-empty sensing window for ops visibility.
+    # Tally how many L1-KPM (RF=2) slots found a cached RF=1 sensing window
+    # (via the (sfn,slot) cross-SM correlation) for ops visibility — a low
+    # ratio flags lost/late RF=1 indications.
 
     def _tally_sensing(self, has_ranges: bool) -> None:
         self._sensing_slots_total += 1
@@ -1227,13 +1301,10 @@ class SpectrumSharingDApp(DApp):
         prb_blk_list = env["payload"]["blockedPRBs"]
         dapp_logger.info(f"xApp control: blockedPRBs={prb_blk_list}")
 
-        control_payload = self.create_prb_block_control(blocked_prbs=prb_blk_list)
-        self.e3_interface.schedule_control(
-            dappId=self.dapp_id,
-            ranFunctionId=self.PRB_CONTROL_RAN_FUNCTION_ID,
-            controlId=self.SPECTRUM_CONTROL_ID_PRB_BLOCK,
-            actionData=control_payload,
-        )
+        # Route the xApp's absolute list through the same reconciled set as the
+        # detection loop. Under the gNB's REPLACE install the two controllers
+        # would otherwise clobber each other; reconciling sends the full union.
+        self._reconcile_prb_blocks(xapp={int(p) for p in prb_blk_list})
         dapp_logger.info(f"Sending Control to RAN: blacklistedPRBs={prb_blk_list}")
 
         if self.save_iqs:
@@ -1302,24 +1373,33 @@ class SpectrumSharingDApp(DApp):
         return iq_symbols, iq_3d
 
     @override
-    def _handle_indication(self, dapp_identifier: int, data: bytes):
-        """libe3 inbound-thread callback. IQ arrives on the L1-KPM SM (RF=2)
-        as an shm-pointer payload; sensing ranges arrive on the Spectrum SM
-        (RF=1). Dispatch by decoding one then the other.
+    def _handle_indication(self, dapp_identifier: int, ran_function_id: int, data: bytes):
+        """Inbound-thread callback. Dispatch on the RAN function id: the
+        L1-KPM SM (RF=2) carries an IQ shm pointer, the Spectrum SM (RF=1)
+        carries a Spectrum-SensingIndication. APER has no field tags, so the
+        two envelopes are not reliably distinguishable by content (a Spectrum
+        indication decodes as a valid L1-KPM one ~25% of the time); the
+        ranFunctionIdentifier is the only authoritative discriminant.
         """
         t = Timings(recv_ns=time.monotonic_ns())
         if not data:
             return
 
-        # RF=2 L1-KPM (IQ shm pointer) vs RF=1 Spectrum sensing indication.
-        p = SlotPointer.from_bytes(data)
-        if p is not None:
-            self._handle_l1_indication(p, t)
+        if ran_function_id == self.RAN_FUNCTION_ID:
+            p = SlotPointer.from_bytes(data)
+            if p is not None:
+                self._handle_l1_indication(p, t)
+                return
+            dapp_logger.info("[SPECTRUM] RF=%d IQ pointer did not decode; dropping",
+                             ran_function_id)
             return
-        if self._handle_sensing_indication(data):
+        if ran_function_id == self.PRB_CONTROL_RAN_FUNCTION_ID:
+            if not self._handle_sensing_indication(data):
+                dapp_logger.info("[SPECTRUM] RF=%d sensing indication did not decode; dropping",
+                                 ran_function_id)
             return
 
-        dapp_logger.info("[SPECTRUM] indication payload not recognised; dropping")
+        dapp_logger.info("[SPECTRUM] indication on unexpected RF=%d; dropping", ran_function_id)
 
     def _handle_sensing_indication(self, data: bytes) -> bool:
         """Decode an RF=1 Spectrum-SensingIndication and cache its sensing
@@ -1587,9 +1667,11 @@ class SpectrumSharingDApp(DApp):
                             sfn: int, slot: int, ranges, t: Timings):
         """Worker-thread processing of an already-shm-read slot. iq_symbols
         is a list of flat float32 [I,Q,I,Q,...] arrays (one per symbol of
-        antenna 0), already rescaled by 1/fp16_beta upstream. ``ranges``
-        is the tuple of SensingRange shipped inline in the same L1 indication;
-        drives the 2D dashboard filter when ``self.sensing_only`` is enabled."""
+        antenna 0), already rescaled by 1/fp16_beta upstream. ``ranges`` is the
+        tuple of SensingRange the RF=2 handler looked up in ``_sensing_cache``
+        for this (sfn,slot) — cross-SM correlation with the RF=1 Spectrum
+        indication that cached them; drives the 2D dashboard filter and the
+        detector window when ``self.sensing_only`` is enabled."""
         _ = (sfn, slot)  # reserved for future per-slot diagnostics
         now = time.monotonic()
         n_sym = len(iq_symbols)
@@ -1613,7 +1695,9 @@ class SpectrumSharingDApp(DApp):
         if self.iqPlotterGui:
             self.iq_queue.put(last_iq_arr)
         if self.dashboard:
-            self.demo.publish_slot(mag_batch, sfn, slot)
+            self.demo.publish_slot(mag_batch, sfn, slot,
+                                   blocked=self._last_det_mask,
+                                   det_thr=self._last_det_thr)
         if self.save_iqs:
             with self._sample_idx_lock:
                 self.sample_idx = self.iq_saver.save_samples(last_iq_arr, timestamp=timestamp)
@@ -1664,7 +1748,15 @@ class SpectrumSharingDApp(DApp):
         # detections in non-kept columns are suppressed post hoc to
         # avoid feeding back UE PRBs into the PRB-blacklist control.
         det_col_keep = None
-        if self.sensing_only and ranges:
+        if self.sensing_only:
+            if not ranges:
+                # No cached sensing window for this (sfn,slot) — the RF=1
+                # Spectrum-SensingIndication was lost, late, or absent. Feeding
+                # the full slot here would train the noise floor on the UE's own
+                # PUSCH, the exact thing sensing_only exists to prevent, so skip
+                # the detector entirely and preserve prior state.
+                self._record_latency(t)
+                return
             det_input = self._build_detector_input(mag_batch, ranges)
             if det_input is None:
                 # No sensing-window cells in this slot — don't let the
@@ -1700,6 +1792,12 @@ class SpectrumSharingDApp(DApp):
         # PUSCH PRBs on the basis of poisoned detections.
         if det_col_keep is not None:
             blocked = blocked & det_col_keep
+
+        # Cache for the visualizer: the per-subcarrier detection mask and the
+        # active threshold, overlaid on subsequent waterfall frames as the
+        # red block strip.
+        self._last_det_mask = blocked
+        self._last_det_thr = self._detector.threshold_db
 
         # All PRBs where the detector flagged at least one subcarrier — reported and annotated as-is.
         sc = self.num_consecutive_subcarriers_for_prb
@@ -1746,55 +1844,24 @@ class SpectrumSharingDApp(DApp):
         report_payload = self.create_prb_blacklist_report(
             blacklisted_prbs=reported_prbs.astype(int).tolist()
         )
+        # The report carries a Spectrum-DAppReportData envelope, so it must
+        # target the Spectrum SM (RF=1) — the L1-KPM SM (RF=2) can't decode it.
         self.e3_interface.schedule_report(
             dappId=self.dapp_id,
-            ranFunctionId=self.RAN_FUNCTION_ID,
+            ranFunctionId=self.PRB_CONTROL_RAN_FUNCTION_ID,
             reportData=report_payload,
         )
 
         if self.control:
             # Filter out BWP/PRACH + guard band — only for the control message to the gNB.
             prb_blk_list = self._compute_prb_blacklist(detected_prbs)
-            # Additive while interference is present, full release when it
-            # clears:
-            #  - PRBs detected: the gNB install is additive, so send only the
-            #    ones not already blocked (already-blocked PRBs stay blocked);
-            #  - nothing detected: send an empty list so the gNB clears the
-            #    UL+DL block and the scheduler returns to the full band. Only
-            #    sent when something was actually blocked, so a quiet run does
-            #    not re-emit empty clears every cycle.
             detected_set = {int(p) for p in prb_blk_list.tolist()}
-            if detected_set:
-                new_prbs = sorted(detected_set - self._prb_block_sent)
-                if new_prbs:
-                    control_payload = self.create_prb_block_control(
-                        blocked_prbs=new_prbs, update_sampling=update_sampling
-                    )
-                    self.e3_interface.schedule_control(
-                        dappId=self.dapp_id,
-                        ranFunctionId=self.PRB_CONTROL_RAN_FUNCTION_ID,
-                        controlId=self.SPECTRUM_CONTROL_ID_PRB_BLOCK,
-                        actionData=control_payload,
-                    )
-                    self._prb_block_sent.update(new_prbs)
-                    dapp_logger.info(
-                        f"Control block +{len(new_prbs)} new PRB(s): {new_prbs} "
-                        f"(blocked total={len(self._prb_block_sent)})"
-                    )
-            elif self._prb_block_sent:
-                control_payload = self.create_prb_block_control(blocked_prbs=[])
-                self.e3_interface.schedule_control(
-                    dappId=self.dapp_id,
-                    ranFunctionId=self.PRB_CONTROL_RAN_FUNCTION_ID,
-                    controlId=self.SPECTRUM_CONTROL_ID_PRB_BLOCK,
-                    actionData=control_payload,
-                )
-                n = len(self._prb_block_sent)
-                self._prb_block_sent.clear()
-                dapp_logger.info(
-                    f"Control clear: nothing detected, released {n} blocked PRB(s) "
-                    "(scheduler back to full band)"
-                )
+            # Publish this detection cycle's contribution to the reconciled
+            # block set. The gNB install is REPLACE (not additive), so
+            # _reconcile_prb_blocks re-sends the FULL union of all sources and
+            # never sends a bare delta — a cleared detection set no longer
+            # wipes PRBs an operator/xApp still wants blocked, and vice versa.
+            self._reconcile_prb_blocks(detect=detected_set, update_sampling=update_sampling)
         else:
             prb_blk_list = np.empty(0, dtype=np.uint16)
 

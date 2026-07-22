@@ -68,7 +68,7 @@ class SimpleDApp(DApp):
     # ---- E3AP callbacks -------------------------------------------------- #
 
     @override
-    def _handle_indication(self, dapp_identifier, data: bytes):
+    def _handle_indication(self, dapp_identifier, ran_function_id, data: bytes):
         """Process a raw indication payload from the TEST service model.
 
         The simple_agent sends 16 bytes:

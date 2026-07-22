@@ -189,9 +189,10 @@ class E3Interface:
                         case "indicationMessage":
                             e3_indication_message = pdu_data
                             dapp_identifier = e3_indication_message['dAppIdentifier']
+                            ran_function_id = e3_indication_message['ranFunctionIdentifier']
                             protocolData = e3_indication_message['protocolData']
-                            e3_logger.debug(f"Indication message for dApp {dapp_identifier}, protocolData {len(protocolData)} bytes")
-                            self._handle_indication_data(dapp_identifier, protocolData)
+                            e3_logger.debug(f"Indication message for dApp {dapp_identifier}, RF={ran_function_id}, protocolData {len(protocolData)} bytes")
+                            self._handle_indication_data(dapp_identifier, ran_function_id, protocolData)
 
                         case "messageAck":
                             e3_message_ack = pdu_data
@@ -301,7 +302,7 @@ class E3Interface:
         else:
             e3_logger.warning(f"No subscription callback registered for dApp {dapp_id}")
 
-    def _handle_indication_data(self, dapp_identifier, data):
+    def _handle_indication_data(self, dapp_identifier, ran_function_id, data):
         # Snapshot the matching callbacks under the lock (#83: never iterate the
         # live dict while it may be mutated from another thread), then invoke
         # outside the lock. De-duplicate while preserving order: the same
@@ -325,7 +326,7 @@ class E3Interface:
         if callbacks:
             e3_logger.debug(f"Launch {len(callbacks)} unique callback(s) for dApp {dapp_identifier}")
             for callback in callbacks:
-                callback(dapp_identifier, data)
+                callback(dapp_identifier, ran_function_id, data)
         else:
             e3_logger.warning(f"No indication callback registered for dApp {dapp_identifier}")
 

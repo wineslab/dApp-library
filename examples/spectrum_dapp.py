@@ -27,17 +27,15 @@ def stop_program(time_to_wait, dapp: SpectrumSharingDApp):
 
 def main(args):
     if args.model:
-        try:
-            from libiq.classifier.cnn import Classifier
-        except ModuleNotFoundError:
-            print(
-                "Optional dependencies to run this example are not installed.\n"
-                "Fix this by running:\n\n"
-                "    pip install libiq  # OR\n"
-                "    pip install dapps[cnn] (minimal) # OR\n"
-                "    pip install dapps[all] (preferred)\n"
-            )
-            exit(-1)
+        # CNN signal classification is not wired into SpectrumSharingDApp; a
+        # classifier= kwarg would fall through to **kwargs and be dropped, so
+        # --model (and --time-window/--moving-avg-window/--extraction-window)
+        # would silently do nothing. Fail loudly instead.
+        raise SystemExit(
+            "--model (CNN signal classification) is not supported by "
+            "SpectrumSharingDApp; remove --model and the associated "
+            "--time-window/--moving-avg-window/--extraction-window flags."
+        )
 
     # This value really depends on the RF conditions and the RU used and
     # should be carefully calibrated.
@@ -85,16 +83,6 @@ def main(args):
             f" | window: {args.average_over_frames} frames"
         )
 
-    classifier = None
-    if args.model:
-        classifier = Classifier(
-            time_window=args.time_window,
-            input_vector=fft_size,
-            moving_avg_window=args.moving_avg_window,
-            extraction_window=args.extraction_window,
-            model_path=args.model,
-        )
-
     dapp = SpectrumSharingDApp(
         detector=detector,
         save_iqs=args.save_iqs,
@@ -107,20 +95,18 @@ def main(args):
         viz_web_port=args.viz_web_port,
         viz_zmq_port=args.viz_zmq_port,
         external_viz=args.external_viz,
-        classifier=classifier,
         center_freq=args.center_freq,
         num_prbs=args.num_prbs,
         e_sampling=args.e,
         num_subcarrier_spacing=args.num_subcarrier_spacing,
         sampling_threshold=args.sampling_threshold,
         max_samples_per_file=args.max_samples_per_file,
-        dashboard_aggregation_size=args.dashboard_aggregation_size,
+        fp16_beta=args.fp16_beta,
         sensing_only=args.sensing_only,
         strict_sensing=args.strict_sensing,
         min_sensing_symbols=args.min_sensing_symbols,
         encoding_method=args.encoding_method,
         ground_truth=args.ground_truth,
-        show_controls=args.show_controls,
         dapp_name="SpectrumSharing",
         dapp_version="1.0.0",
         vendor="WinesLab",
@@ -254,13 +240,11 @@ if __name__ == "__main__":
                              "(only used with --save-iqs). "
                              "Updatable at runtime via the dashboard GUI "
                              "when --demo-gui is also set.")
-    parser.add_argument('--show-controls', action='store_true', default=False,
-                        help="Show tunable controls (sampling threshold) in the dashboard GUI. "
-                             "Only meaningful with --demo-gui.")
-    parser.add_argument('--dashboard-aggregation-size', type=int, default=14,
-                        help="Number of input symbol rows to mean-fold into one dashboard row. "
-                             "14 = one row per UL slot (default), 1 = no aggregation. "
-                             "Adjustable at runtime from the sidebar.")
+    parser.add_argument('--fp16-beta', type=float, default=1.0 / 2048.0,
+                        help="FP16 IQ rescale factor; MUST match the gNB "
+                             "E3Configuration.fp16_beta (the reader rescales by "
+                             "1/beta). Default 1/2048 matches the gNB code default; "
+                             "the X410 sample conf overrides it to 0.0078125 (1/128).")
     parser.add_argument('--encoding-method', type=str, default='asn1',
                         choices=['asn1', 'json'],
                         help="Wire encoding for Spectrum-* envelopes (default: asn1).")
