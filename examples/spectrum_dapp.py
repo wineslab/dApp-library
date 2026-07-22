@@ -104,6 +104,9 @@ def main(args):
         energyGui=args.energy_gui,
         iqPlotterGui=args.iq_plotter_gui,
         dashboard=args.demo_gui,
+        viz_web_port=args.viz_web_port,
+        viz_zmq_port=args.viz_zmq_port,
+        external_viz=args.external_viz,
         classifier=classifier,
         center_freq=args.center_freq,
         num_prbs=args.num_prbs,
@@ -212,7 +215,13 @@ if __name__ == "__main__":
     parser.add_argument('--iq-plotter-gui', action='store_true', default=False,
                         help="Enable IQ time-domain plotter")
     parser.add_argument('--demo-gui', action='store_true', default=False,
-                        help="Enable dashboard visualization")
+                        help="Publish per-slot subcarrier power to the visualizer")
+    parser.add_argument('--viz-web-port', type=int, default=5001,
+                        help="Visualizer web UI port (default 5001)")
+    parser.add_argument('--viz-zmq-port', type=int, default=5559,
+                        help="ZMQ port the dApp publishes on / the visualizer reads (default 5559)")
+    parser.add_argument('--external-viz', action='store_true', default=False,
+                        help="Don't spawn the visualizer; publish to an already-running one")
     parser.add_argument('--num-prbs', type=int, default=106,
                         help="Number of PRBs")
     parser.add_argument('--num-subcarrier-spacing', type=int, default=30,
@@ -257,10 +266,9 @@ if __name__ == "__main__":
                         help="Wire encoding for Spectrum-* envelopes (default: asn1).")
     parser.add_argument('--no-sensing-only', dest='sensing_only',
                         action='store_false', default=True,
-                        help="Disable the sensing-window dashboard filter. By default the dApp "
-                             "subscribes to OAI-L2-KPM (RF=3) sensing ranges and slices the "
-                             "dashboard rows to sensing-PUSCH symbols; passing this flag "
-                             "shows every symbol of every slot instead.")
+                        help="Disable the sensing-window filter. By default the dApp uses the "
+                             "sensing ranges from the Spectrum SM (RF=1) to slice the detector "
+                             "input to sensing-PUSCH cells; passing this flag uses every cell.")
     parser.add_argument('--strict-sensing', dest='strict_sensing',
                         action='store_true', default=False,
                         help="Stricter sensing filter: drop any slot whose sensing window "

@@ -31,6 +31,25 @@
         "description"
       ]
     },
+    "Spectrum-SensingIndication": {
+      "type": "object",
+      "properties": {
+        "sensing_shm": {
+          "type": "object",
+          "properties": {
+            "shm_name": { "type": "string" },
+            "write_idx": { "type": "integer", "minimum": 0, "maximum": 65535 },
+            "n_ranges": { "type": "integer", "minimum": 0, "maximum": 128 }
+          },
+          "required": ["shm_name", "write_idx", "n_ranges"]
+        },
+        "timestamp": { "type": "integer", "minimum": 0 },
+        "sfn": { "type": "integer", "minimum": 0, "maximum": 65535 },
+        "slot": { "type": "integer", "minimum": 0, "maximum": 65535 },
+        "beam": { "type": "integer", "minimum": 0, "maximum": 3 }
+      },
+      "required": ["sensing_shm", "timestamp", "sfn", "slot"]
+    },
     "Spectrum-IQDataIndication": {
       "type": "object",
       "properties": {

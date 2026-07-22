@@ -1,3 +1,5 @@
+import warnings
+
 import numpy as np
 
 class AdaptiveNoiseFloor:
@@ -19,7 +21,7 @@ class AdaptiveNoiseFloor:
     self._head = 0       # next row to write
     self._count = 0      # how many times we've been updated
 
-  def update(self, iq_buffer: np.ndarray) -> None:
+  def update(self, iq_buffer: np.ndarray, valid_mask: np.ndarray | None = None) -> None:
     """
     Store a new I/Q frequency-domain buffer in the circular buffer.
 
@@ -27,6 +29,10 @@ class AdaptiveNoiseFloor:
     ----------
     iq_buffer : np.ndarray
         1-D real float array of length n containing per-bin magnitudes.
+    valid_mask : np.ndarray or None
+        Optional boolean array of length n. Bins where it is False are stored
+        as NaN and excluded from the median, so out-of-window (e.g. zeroed)
+        columns don't drag the floor toward 0.
 
     Raises
     ------
@@ -36,7 +42,8 @@ class AdaptiveNoiseFloor:
     if iq_buffer.shape[0] != self.n:
       raise ValueError(f"Expected buffer of length {self.n}, got {iq_buffer.shape[0]}")
 
-    np.copyto(self._buffer[self._head], iq_buffer, casting="unsafe")
+    row = iq_buffer if valid_mask is None else np.where(valid_mask, iq_buffer, np.nan)
+    np.copyto(self._buffer[self._head], row, casting="unsafe")
     self._head = (self._head + 1) % self.x
     self._count += 1
 
@@ -53,7 +60,12 @@ class AdaptiveNoiseFloor:
     if self._count < self.x:
       return None
 
-    return np.median(self._buffer, axis=0).astype(np.float32)
+    with warnings.catch_warnings():
+      warnings.simplefilter("ignore", RuntimeWarning)  # all-NaN bins
+      floor = np.nanmedian(self._buffer, axis=0).astype(np.float32)
+    # Bins with no valid samples in the window never trigger detection.
+    floor[np.isnan(floor)] = np.inf
+    return floor
 
   def reset(self) -> None:
     """Reset the circular buffer, discarding all history."""

@@ -26,6 +26,7 @@ from spectrum.e3_ran_buffers_reader import (
     SlotPointer,
     N_SC_PER_SLOT,
 )
+from spectrum.e3_l2_sensing_reader import E3L2SensingReader, SensingRange
 from spectrum.threshold_detector import (
     ThresholdDetector,
     StaticThresholdDetector,
@@ -184,7 +185,6 @@ def make_periodic_toggle_callback(period_s: float, n_slots: int,
 class SpectrumSharingDApp(DApp):
 
     _SPECTRUM_JSON_BINARY_FIELDS = {
-        "Spectrum-IQDataIndication": ["iqSamples"],
         "Spectrum-PRBBlacklistControl": ["blacklistedPRBs"],
         "Spectrum-PRBBlacklistReport": ["blacklistedPRBs"]
     }
@@ -213,22 +213,20 @@ class SpectrumSharingDApp(DApp):
     TELEMETRY_ID = [1]
     CONTROL_ID = [1]
 
-    # PRB-block control destination (SpectrumSM, RF=1).
+    # Spectrum SM (RF=1): sensing-range telemetry + PRB-block / sensing-policy control.
     PRB_CONTROL_RAN_FUNCTION_ID = 1
-    # Spectrum SM control IDs (both under RAN function 1).
+    SPECTRUM_TELEMETRY_ID_SENSING = 1  # Spectrum-SensingIndication stream
     SPECTRUM_CONTROL_ID_PRB_BLOCK = 1
     SPECTRUM_CONTROL_ID_SENSING_POLICY = 2
 
     # Symbol mask upper bound (14-bit bitmap).
     SENSING_SYMBOL_MASK_MAX = 0x3FFF
 
-
-    # SHM staleness threshold: if (recv_ts - producer_ts) exceeds this, the
-    # gNB's FH ring has likely rotated past the row we're about to read,
-    # which means the bytes are no longer the slot the in-band mask
-    # describes. Cut just below the ring TTL (64 rows × 2 buffers × 0.5ms
-    # ≈ 64ms) to leave a small safety margin.
-    _SHM_STALENESS_NS = 50_000_000  # 50 ms
+    # Slot duration at 30 kHz SCS (numerology 1). Used to derive the SHM
+    # staleness bound from the ring depth reported in the shm header.
+    _SLOT_DURATION_NS = 500_000
+    # Fallback staleness bound until the FH ring header is read (see _shm_staleness_ns).
+    _SHM_STALENESS_NS_DEFAULT = 50_000_000
 
     # PRBs around the DC subcarrier that exhibit leakage artefacts and must
     # be excluded from both reports and control messages.
@@ -410,6 +408,10 @@ class SpectrumSharingDApp(DApp):
         # first indication so the gNB has time to create the shm region.
         self.fp16_beta = fp16_beta
         self._shm_reader = E3RanBuffersReader(fp16_beta=fp16_beta)
+        # RF=1 sensing ranges arrive out-of-band via the /e3_l2_sensing ring;
+        # cache the latest per (sfn, slot) for the RF=2 IQ handler to consume.
+        self._sensing_reader = E3L2SensingReader()
+        self._sensing_cache: "OrderedDict[tuple, tuple]" = OrderedDict()
         self._shm_open_failures = 0
         self._shm_indications_handled = 0
         self._shm_indications_dropped = 0
@@ -533,21 +535,12 @@ class SpectrumSharingDApp(DApp):
             )
 
         if self.dashboard:
-            from visualization.dashboard import Dashboard
+            from visualization.subcarrier_pub import SubcarrierPublisher
 
-            classifier = kwargs.get('classifier', None)
-            self.demo = Dashboard(
-
-                buffer_size=200, ofdm_symbol_size=self.ofdm_symbol_size,
-                first_carrier_offset=self.first_carrier_offset,
-                bw=self.bw, center_freq=self.center_freq, num_prbs=num_prbs,
-                classifier=classifier,
-                adaptiveThreshold=isinstance(self._detector, AdaptiveThresholdDetector),
-                control=self.control,
-                label_callback=self.set_ground_truth_label if self.save_iqs else None,
-                initial_label=self._ground_truth_label if self.save_iqs else "",
-                show_controls=kwargs.get('show_controls', False),
-                aggregation_size=int(dashboard_aggregation_size),
+            self.demo = SubcarrierPublisher(
+                zmq_port=int(kwargs.get('viz_zmq_port', 5559)),
+                web_port=int(kwargs.get('viz_web_port', 5001)),
+                spawn_viz=not kwargs.get('external_viz', False),
             )
 
     def _init_spectrum_encoder(self):
@@ -664,8 +657,6 @@ class SpectrumSharingDApp(DApp):
         with self._ground_truth_lock:
             self._ground_truth_label = label
         dapp_logger.info(f"Ground truth label set to: {label!r}")
-        if self.dashboard:
-            self.demo.emit_label(label)
 
     def create_prb_block_control(self, blocked_prbs: list[int],
                                  update_sampling: bool = False,
@@ -884,15 +875,6 @@ class SpectrumSharingDApp(DApp):
             inner_type=inner_type, inner=inner,
         )
 
-    def _decode_indication_envelope(self, data: bytes) -> dict:
-        return self._decode_envelope(
-            data,
-            msg_type="Spectrum-IndicationData",
-            type_field="indicationType", payload_field="indicationPayload",
-            inner_type_map={"iqDataIndication": "Spectrum-IQDataIndication"},
-            type_by_key={"iqDataIndication": "iqData"},
-        )
-
     def _decode_xapp_control_envelope(self, data: bytes) -> dict:
         return self._decode_envelope(
             data,
@@ -917,22 +899,6 @@ class SpectrumSharingDApp(DApp):
             return json.dumps(json_data).encode("utf-8")
         raise ValueError(f"Unsupported encoding method: {self.encoding_method}")
 
-    def decode_iq_data_indication(self, data: bytes) -> dict:
-        """Decode an IQ data indication message.
-
-        Accepts bytes from E3-IndicationMessage.protocolData, decodes the
-        Spectrum-IndicationData envelope, and returns the inner
-        Spectrum-IQDataIndication. Raises ValueError if the envelope holds
-        a different variant.
-        """
-        env = self._decode_indication_envelope(data)
-        if env["type"] != "iqData" or env["payload_key"] != "iqDataIndication":
-            raise ValueError(
-                f"Expected iqDataIndication envelope, got type={env['type']!r} "
-                f"payload_key={env['payload_key']!r}"
-            )
-        return env["payload"]
-
     def decode_config_control(self, data: bytes) -> dict:
         """Decode a spectrum xApp control message and return the
         Spectrum-ConfigControl payload.
@@ -955,18 +921,13 @@ class SpectrumSharingDApp(DApp):
 
     @override
     def send_subscription_request(self, subscriptionTime=None, periodicity=None) -> bool:
-        """Subscribe to the L1-KPM SM (RF=2, IQ + inline sensing ranges) and
-        the Spectrum SM (RF=1). The base flow registers
-        ``manage_subscription_response`` and the placeholder indication
-        callback for the dApp once — both responses go through the same
-        dispatcher.
+        """Subscribe to the L1-KPM SM (RF=2, IQ) and the Spectrum SM (RF=1).
 
-        The Spectrum SM (RF=1) is where sensing-range telemetry and the
-        PRB-block / sensing-policy controls live (L2-KPM was folded into it).
-        The subscription is control-only (empty telemetry list): it starts
-        the SM on the gNB so incoming controls are accepted rather than
-        NACKed as "SM not running", while sensing ranges keep arriving
-        inline on the L1-KPM (RF=2) indications.
+        RF=2 carries the IQ shm pointer + validSymbolMask. RF=1 carries the
+        sensing-range telemetry (Spectrum-SensingIndication → /e3_l2_sensing)
+        and accepts the PRB-block / sensing-policy controls. The RF=1
+        subscription therefore requests the sensing telemetry id in addition
+        to the two control ids.
 
         Returns the L1 subscription's scheduled status; the Spectrum-SM
         subscription is best-effort.
@@ -990,7 +951,7 @@ class SpectrumSharingDApp(DApp):
         spectrum_scheduled = self.e3_interface.send_subscription_request(
             self.dapp_id,
             self.PRB_CONTROL_RAN_FUNCTION_ID,  # Spectrum SM (RF=1)
-            [],  # control-only: no telemetry stream, just start the SM
+            [self.SPECTRUM_TELEMETRY_ID_SENSING],  # sensing-range telemetry
             [self.SPECTRUM_CONTROL_ID_PRB_BLOCK, self.SPECTRUM_CONTROL_ID_SENSING_POLICY],
             subscriptionTime,
             periodicity,
@@ -998,12 +959,7 @@ class SpectrumSharingDApp(DApp):
         if not spectrum_scheduled:
             dapp_logger.warning(
                 f"Spectrum SM RF={self.PRB_CONTROL_RAN_FUNCTION_ID} subscription not "
-                "scheduled; PRB-block / sensing-policy controls may be NACKed by the gNB"
-            )
-        else:
-            dapp_logger.debug(
-                f"Subscription request for Spectrum SM RF={self.PRB_CONTROL_RAN_FUNCTION_ID} "
-                "scheduled (control-only)"
+                "scheduled; sensing telemetry and controls may be unavailable"
             )
         return l1_scheduled
 
@@ -1347,33 +1303,68 @@ class SpectrumSharingDApp(DApp):
 
     @override
     def _handle_indication(self, dapp_identifier: int, data: bytes):
-        """libe3 inbound-thread callback. Telemetry arrives on the L1-KPM
-        SM (RF=2) as an shm-pointer payload carrying the IQ shm coordinates
-        and the slot's inline sensing ranges; decode it via
-        :class:`SlotPointer` and run the heavy IQ pipeline.
+        """libe3 inbound-thread callback. IQ arrives on the L1-KPM SM (RF=2)
+        as an shm-pointer payload; sensing ranges arrive on the Spectrum SM
+        (RF=1). Dispatch by decoding one then the other.
         """
         t = Timings(recv_ns=time.monotonic_ns())
         if not data:
             return
 
+        # RF=2 L1-KPM (IQ shm pointer) vs RF=1 Spectrum sensing indication.
         p = SlotPointer.from_bytes(data)
         if p is not None:
             self._handle_l1_indication(p, t)
             return
+        if self._handle_sensing_indication(data):
+            return
 
-        dapp_logger.info(
-            "[SPECTRUM] indication payload did not parse as an L1-KPM shm "
-            "pointer; dropping"
-        )
+        dapp_logger.info("[SPECTRUM] indication payload not recognised; dropping")
+
+    def _handle_sensing_indication(self, data: bytes) -> bool:
+        """Decode an RF=1 Spectrum-SensingIndication and cache its sensing
+        ranges (read from the /e3_l2_sensing ring) keyed by (sfn, slot) for the
+        RF=2 IQ handler. Returns False if the payload isn't a sensing indication.
+        """
+        try:
+            msg = self._decode_spectrum_message("Spectrum-SensingIndication", data)
+        except Exception:
+            return False
+        try:
+            sfn, slot = int(msg["sfn"]), int(msg["slot"])
+            if self.encoding_method == "asn1":
+                write_idx, n = int(msg["shmWriteIdx"]), int(msg["nRanges"])
+            else:
+                shm = msg["sensing_shm"]
+                write_idx, n = int(shm["write_idx"]), int(shm["n_ranges"])
+        except (KeyError, TypeError, ValueError):
+            return False
+
+        ranges: tuple = ()
+        if n:
+            try:
+                if not self._sensing_reader.is_open:
+                    self._sensing_reader.open()
+                ranges = tuple(self._sensing_reader.read_ranges(write_idx, sfn, slot, n))
+            except OSError:
+                pass
+        self._sensing_cache[(sfn, slot)] = ranges
+        while len(self._sensing_cache) > 256:
+            self._sensing_cache.popitem(last=False)
+        return True
+
+    def _shm_staleness_ns(self) -> int:
+        """FH-ring TTL derived from the shm header (num_fh_rows × 2 buffers ×
+        slot time), falling back to a fixed bound until the header is read."""
+        rows = self._shm_reader.num_fh_rows
+        if rows:
+            return rows * 2 * self._SLOT_DURATION_NS
+        return self._SHM_STALENESS_NS_DEFAULT
 
     def _handle_l1_indication(self, p: SlotPointer, t: Timings) -> None:
-        """Read the slot's IQ from /e3_ran_buffers, attach the sensing
-        symbol mask (already embedded in the L1 indication payload), and
-        queue the bundle for the worker.
-
-        The sensing ranges ride in the same L1-KPM indication as the shm
-        pointer, so the worker always has a correct, slot-local mask with no
-        cross-SM (sfn, slot) correlation."""
+        """Read the slot's IQ from /e3_ran_buffers, attach the sensing ranges
+        cached from the matching RF=1 indication (by sfn/slot), and queue the
+        bundle for the worker."""
         t.decoded_ns = time.monotonic_ns()
         t.producer_ts_ns = p.timestamp_ns
 
@@ -1390,18 +1381,16 @@ class SpectrumSharingDApp(DApp):
         # untrustworthy and skip the slot.
         if p.timestamp_ns > 0:
             lag_ns = t.recv_ns - p.timestamp_ns
-            if lag_ns > self._SHM_STALENESS_NS:
+            stale_ns = self._shm_staleness_ns()
+            if lag_ns > stale_ns:
                 self._shm_stale_dropped += 1
                 if (self._shm_stale_dropped <= 5
                         or (self._shm_stale_dropped % 500) == 0):
                     dapp_logger.warning(
                         "[SHM] stale slot dropped — lag=%.1f ms > %.0f ms TTL; "
                         "the producer ring has likely rotated past this row. "
-                        "Total stale drops: %d. If this climbs, the inbound "
-                        "thread is falling behind.",
-                        lag_ns / 1e6,
-                        self._SHM_STALENESS_NS / 1e6,
-                        self._shm_stale_dropped,
+                        "Total stale drops: %d.",
+                        lag_ns / 1e6, stale_ns / 1e6, self._shm_stale_dropped,
                     )
                 return
 
@@ -1419,8 +1408,9 @@ class SpectrumSharingDApp(DApp):
             self._diag_log_full_slot(p, iq_3d)
         self._count_handled(p, iq_symbols)
 
-        # Sensing ranges are embedded inline in this L1 indication.
-        ranges = p.sensing_ranges
+        # Sensing ranges arrive on RF=1 (Spectrum SM); look up the latest for
+        # this (sfn, slot). Empty until the matching RF=1 indication is seen.
+        ranges = self._sensing_cache.get((p.sfn, p.slot), ())
         self._tally_sensing(bool(ranges))
 
         # [MASK] diag: dump ranges per slot for the first 20 then every 200.
@@ -1542,110 +1532,6 @@ class SpectrumSharingDApp(DApp):
                     self._ind_queue_dropped, self._ind_queue.qsize(),
                 )
 
-    def _maybe_filter_for_dashboard(self, mag_batch, ranges):
-        """Apply 2D (symbol, PRB) sensing-window filter to ``mag_batch``.
-
-        ``mag_batch`` is shape ``[n_symbols, n_subcarriers]``. Each
-        ``SensingRange`` defines a rectangle ``[start_symbol .. +num_symbols,
-        rb_start*12 .. +rb_size*12]`` of cells the MAC scheduler reserved
-        for sensing. We keep only those cells and zero everything else.
-        Rows entirely outside the union of all ranges are dropped from
-        the returned array — there's nothing to show in those symbols.
-
-        Returns:
-          - ``mag_batch`` unchanged → sensing_only=False, render the slot.
-          - sliced 2D array        → kept rows with non-sensing PRBs zeroed.
-          - ``None``               → no sensing window or all cells masked
-                                     out — skip the dashboard row.
-        """
-        if not self.sensing_only:
-            return mag_batch
-        if not ranges:
-            self._drop_window.append(1)
-            return None
-        n_sym, n_sc = mag_batch.shape
-        if n_sym < 14:
-            # Short-slot passthrough (e.g. mixed-slot remainder): no mask
-            # applied, the slot reaches the dashboard unfiltered.  Record
-            # as a non-drop in the sliding window so the heartbeat
-            # denominator is correct.
-            self._drop_window.append(0)
-            return mag_batch
-
-        # Build the 2D keep mask. Each range OR'd in.
-        keep = np.zeros((n_sym, n_sc), dtype=bool)
-        for r in ranges:
-            if r.num_symbols <= 0 or r.rb_size <= 0:
-                continue
-            sym_lo = max(0, r.start_symbol)
-            sym_hi = min(n_sym, r.start_symbol + r.num_symbols)
-            sc_lo  = max(0, r.rb_start * self.num_consecutive_subcarriers_for_prb)
-            sc_hi  = min(
-                n_sc,
-                (r.rb_start + r.rb_size) * self.num_consecutive_subcarriers_for_prb,
-            )
-            if sym_lo >= sym_hi or sc_lo >= sc_hi:
-                continue
-            keep[sym_lo:sym_hi, sc_lo:sc_hi] = True
-
-        # STRICT mode: require the sensing window to cover EVERY cell in
-        # this slot. If any cell is outside the sensing range, the MAC
-        # granted UE PUSCH there — drop the slot to keep the dashboard
-        # free of UE bleed (CP overlap, spectral leakage). Logged
-        # periodically so the user can see how many slots are dropped
-        # under load.
-        if self.strict_sensing and not keep.all():
-            self._strict_dropped += 1
-            self._drop_window.append(1)
-            if (self._strict_dropped <= 5
-                    or (self._strict_dropped % 500) == 0):
-                kept_cells = int(keep.sum())
-                total_cells = n_sym * n_sc
-                dapp_logger.info(
-                    "[STRICT] dropped slot — sensing window covers %d/%d cells "
-                    "(%.1f%%); total dropped so far: %d",
-                    kept_cells, total_cells,
-                    100.0 * kept_cells / max(1, total_cells),
-                    self._strict_dropped,
-                )
-            return None
-
-        # Rows with at least one kept cell — drop the rest.
-        kept_rows = keep.any(axis=1)
-        n_kept = int(kept_rows.sum())
-        if n_kept == 0:
-            self._drop_window.append(1)
-            return None
-
-        # Brightness-fairness gate: if too few symbols survived, the
-        # resulting dashboard row would be a single-symbol average and
-        # show up as a dim stripe between bright full-slot rows. Drop
-        # those slots to keep the waterfall visually consistent. The
-        # threshold is configurable; 1 = display every partial slot
-        # (raw behaviour), 14 = same as strict.
-        if n_kept < self.min_sensing_symbols:
-            self._dim_dropped += 1
-            self._drop_window.append(1)
-            if (self._dim_dropped <= 5
-                    or (self._dim_dropped % 500) == 0):
-                dapp_logger.info(
-                    "[FILTER] dropped dim slot — %d kept symbols < %d "
-                    "threshold (total dropped: %d)",
-                    n_kept, self.min_sensing_symbols, self._dim_dropped,
-                )
-            return None
-        self._drop_window.append(0)
-
-        # Zero out non-kept cells within the surviving rows. Use 0
-        # rather than NaN so the dashboard's downstream aggregation
-        # (mean over rows) doesn't have to be NaN-aware. The trade-off
-        # is that aggregated rows containing zeros will read lower
-        # than the actual sensing-cell signal — quantitatively damped
-        # but the spatial pattern (which subcarrier had what energy)
-        # is preserved.
-        out = np.where(keep, mag_batch, 0.0)
-        return out[kept_rows]
-
     def _build_detector_input(self, mag_batch, ranges):
         """Per-PRB magnitude vector that the threshold detector should
         learn from when sensing_only is on. Builds the same 2D keep mask
@@ -1727,14 +1613,7 @@ class SpectrumSharingDApp(DApp):
         if self.iqPlotterGui:
             self.iq_queue.put(last_iq_arr)
         if self.dashboard:
-            # Slice mag_batch to sensing-PUSCH symbols using the mask
-            # shipped in-band with this L1 indication. Dashboard
-            # aggregates the surviving rows internally so the sidebar
-            # can re-tune without round-tripping back here.
-            ts_for_age = t.producer_ts_ns if t.producer_ts_ns > 0 else t.recv_ns
-            dash_mag = self._maybe_filter_for_dashboard(mag_batch, ranges)
-            if dash_mag is not None:
-                self.demo.process_iq_data(("iq_mag_batch", dash_mag, ts_for_age))
+            self.demo.publish_slot(mag_batch, sfn, slot)
         if self.save_iqs:
             with self._sample_idx_lock:
                 self.sample_idx = self.iq_saver.save_samples(last_iq_arr, timestamp=timestamp)
@@ -1798,8 +1677,10 @@ class SpectrumSharingDApp(DApp):
             self._abs_shifted_buf[:] = self._mag_buf
         iq_arr = last_iq_arr
 
-        # Detection (strategy-agnostic)
-        ready, blocked, power_db, noise_floor_db = self._detector.update(abs_shifted, now)
+        # Detection (strategy-agnostic). det_col_keep (when set) excludes
+        # zeroed out-of-window columns from the adaptive noise-floor history.
+        ready, blocked, power_db, noise_floor_db = self._detector.update(
+            abs_shifted, now, det_col_keep)
 
         if not ready:
             return
@@ -1807,8 +1688,6 @@ class SpectrumSharingDApp(DApp):
         # Visualization
         if self.energyGui:
             self.sig_queue.put((power_db, noise_floor_db))
-        if self.dashboard and noise_floor_db is not None:
-            self.demo.process_iq_data(("adaptive_noise_floor", noise_floor_db))
 
         # Suppress detections outside the sensing window.  The detector's
         # noise-floor estimator sees zeros for non-kept columns, which
@@ -1966,10 +1845,6 @@ class SpectrumSharingDApp(DApp):
                     )
                     self.iq_saver.add_annotation(start_sample=corrected_start, **ann)
 
-        # Dashboard shows all detected PRBs; zone overlays (when control is
-        # active) visually distinguish the protected region from blacklist.
-        if self.dashboard:
-            self.demo.process_iq_data(("prb_list", detected_prbs))
         t.after_det_ns = time.monotonic_ns()
         self._record_latency(t)
 
@@ -2084,5 +1959,6 @@ class SpectrumSharingDApp(DApp):
 
         try:
             self._shm_reader.close()
+            self._sensing_reader.close()
         except Exception as exc:
             dapp_logger.debug(f"[SHM] reader close failed: {exc}")

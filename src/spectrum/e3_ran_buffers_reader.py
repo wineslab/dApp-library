@@ -95,32 +95,13 @@ def _get_oai_l1_kpm_compiler():
 
 
 @dataclass(frozen=True)
-class SensingRange:
-    """One sensing window — contiguous (symbol, PRB) rectangle the MAC
-    scheduler committed as free for sensing. The dApp ORs all ranges
-    in a slot into a 2D keep-mask to filter the dashboard."""
-    start_symbol: int
-    num_symbols: int
-    rb_start: int
-    rb_size: int
-
-
-@dataclass(frozen=True)
 class SlotPointer:
-    """Decoded shm coordinates + sensing windows from an L1-KPM payload.
+    """Decoded shm coordinates from an L1-KPM (RF=2) indication.
 
-    ``sensing_ranges`` is the full list of (symbol-span, PRB-span)
-    sensing windows the MAC scheduler committed for this slot,
-    snapshotted by the PHY tap at the same instant as the IQ.
-    Empty tuple ⇒ no sensing window — either a DL portion of a
-    mixed slot, or a slot without sensing reservations.
-
-    The ranges ride in the same indication as the shm pointer, so they
-    cannot be lost or desynchronised the way a separate L2-KPM
-    indication can. The dApp filters both symbol rows AND PRB columns
-    of mag_batch using these ranges, which kills spectral leakage from
-    UEs operating on disjoint PRB ranges (previously visible as
-    "UE communication leaking into the sensing-only display").
+    ``valid_symbol_mask`` is the gNB's 14-bit UL-symbol bitmap (bit s set =
+    symbol s carries genuine off-air UL); ``0x3FFF`` when the field is absent.
+    Sensing ranges do not ride here — they arrive on the RF=1 Spectrum SM (see
+    :mod:`spectrum.e3_l2_sensing_reader`).
     """
 
     fh_buffer_index: int
@@ -130,7 +111,7 @@ class SlotPointer:
     cell_id: int
     n_rx_ant: int
     timestamp_ns: int
-    sensing_ranges: tuple = ()
+    valid_symbol_mask: int = 0x3FFF
 
     @classmethod
     def from_json_bytes(cls, data: bytes) -> Optional["SlotPointer"]:
@@ -149,16 +130,6 @@ class SlotPointer:
             return None
 
         try:
-            raw_ranges = obj.get("sensing_ranges", []) or []
-            ranges = tuple(
-                SensingRange(
-                    start_symbol=int(r["start_symbol"]),
-                    num_symbols=int(r["num_symbols"]),
-                    rb_start=int(r["rb_start"]),
-                    rb_size=int(r["rb_size"]),
-                )
-                for r in raw_ranges
-            )
             return cls(
                 fh_buffer_index=int(iq["fh_buffer_index"]),
                 fh_write_index=int(iq["fh_write_index"]),
@@ -167,7 +138,7 @@ class SlotPointer:
                 cell_id=int(obj.get("cell_id", 0)),
                 n_rx_ant=int(obj.get("n_rx_ant", N_ANTS)),
                 timestamp_ns=int(obj.get("timestamp", 0)),
-                sensing_ranges=ranges,
+                valid_symbol_mask=int(obj.get("valid_symbol_mask", 0x3FFF)),
             )
         except (KeyError, TypeError, ValueError):
             return None
@@ -191,16 +162,6 @@ class SlotPointer:
             return None
 
         try:
-            raw_ranges = decoded.get("sensingRanges") or []
-            ranges = tuple(
-                SensingRange(
-                    start_symbol=int(r["startSymbol"]),
-                    num_symbols=int(r["numSymbols"]),
-                    rb_start=int(r["rbStart"]),
-                    rb_size=int(r["rbSize"]),
-                )
-                for r in raw_ranges
-            )
             return cls(
                 fh_buffer_index=int(iq["fhBufferIndex"]),
                 fh_write_index=int(iq["fhWriteIndex"]),
@@ -209,7 +170,7 @@ class SlotPointer:
                 cell_id=int(decoded.get("cellId") or 0),
                 n_rx_ant=int(decoded.get("nRxAnt") or N_ANTS),
                 timestamp_ns=int(decoded.get("timestamp", 0)),
-                sensing_ranges=ranges,
+                valid_symbol_mask=int(decoded.get("validSymbolMask") or 0x3FFF),
             )
         except (KeyError, TypeError, ValueError):
             return None
@@ -220,9 +181,8 @@ class SlotPointer:
 
         Discriminator is the first byte: JSON payloads start with ``{``
         (0x7B), APER payloads start with the SEQUENCE's OPTIONAL preamble
-        (0x00–0xE0 stepping by 0x20 for this schema's three OPTIONALs).
-        0x7B is not a valid APER preamble byte for L1KPM-Indication, so
-        a one-byte sniff is sufficient.
+        (four OPTIONALs in L1KPM-Indication). 0x7B is not a valid APER
+        preamble byte here, so a one-byte sniff is sufficient.
         """
         if not data:
             return None
@@ -255,6 +215,7 @@ class E3RanBuffersReader:
         self._mmap: Optional[mmap.mmap] = None
         self._header: Optional[_Header] = None
         self._fh_base_offset: int = _HEADER_SIZE
+        self._ino: Optional[int] = None
 
     def open(self) -> None:
         """Map the shm region. Raises FileNotFoundError if OAI hasn't
@@ -269,6 +230,7 @@ class E3RanBuffersReader:
             size = f.tell()
             f.seek(0)
             self._mmap = mmap.mmap(f.fileno(), size, prot=mmap.PROT_READ)
+            self._ino = os.fstat(f.fileno()).st_ino
 
         # Parse header — first 9 uint32_t are: version, fh_buffer_size,
         # pusch_buffer_size, hest_buffer_size, num_fh_samples, num_fh_rows,
@@ -292,6 +254,29 @@ class E3RanBuffersReader:
             self._mmap.close()
             self._mmap = None
         self._header = None
+        self._ino = None
+
+    def reopen_if_stale(self) -> bool:
+        """Remap if the gNB recreated the shm region (restart → new inode).
+
+        The gNB ``shm_unlink``s and recreates ``/e3_ran_buffers`` on init, so a
+        stale mapping keeps returning frozen IQ with in-range indices and no
+        error. Returns True if it remapped.
+        """
+        if self._mmap is None:
+            return False
+        try:
+            live_ino = os.stat(self._shm_path).st_ino
+        except OSError:
+            live_ino = None
+        if live_ino == self._ino:
+            return False
+        self.close()
+        try:
+            self.open()
+        except OSError:
+            pass  # gNB gone; caller's lazy-open retries later
+        return True
 
     @property
     def is_open(self) -> bool:
@@ -312,6 +297,7 @@ class E3RanBuffersReader:
         Returns None if the reader is closed or the indices are out of
         range — caller should treat as a read-drop.
         """
+        self.reopen_if_stale()
         if self._mmap is None or self._header is None:
             return None
         if p.fh_buffer_index not in (0, 1):

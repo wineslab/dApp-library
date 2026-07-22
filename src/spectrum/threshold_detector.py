@@ -37,8 +37,13 @@ class ThresholdDetector(ABC):
         self,
         abs_iq_shifted: np.ndarray,
         timestamp: float,
+        valid_mask: np.ndarray | None = None,
     ) -> tuple[bool, np.ndarray, np.ndarray | None, np.ndarray | None]:
         """Process one magnitude spectrum and return detection results.
+
+        ``valid_mask`` (optional bool array) marks bins that carry real
+        in-window energy; bins where it is False are excluded from the
+        adaptive noise-floor history. Ignored by static detectors.
 
         Parameters
         ----------
@@ -109,6 +114,7 @@ class StaticThresholdDetector(ThresholdDetector):
         self,
         abs_iq_shifted: np.ndarray,
         timestamp: float,
+        valid_mask: np.ndarray | None = None,
     ) -> tuple[bool, np.ndarray, np.ndarray | None, np.ndarray | None]:
         self._acc += abs_iq_shifted
         self._count += 1
@@ -183,8 +189,9 @@ class AdaptiveThresholdDetector(ThresholdDetector):
         self,
         abs_iq_shifted: np.ndarray,
         timestamp: float,
+        valid_mask: np.ndarray | None = None,
     ) -> tuple[bool, np.ndarray, np.ndarray | None, np.ndarray | None]:
-        self._noise_floor_est.update(abs_iq_shifted)
+        self._noise_floor_est.update(abs_iq_shifted, valid_mask)
 
         # Compute per-bin power in dB on every call so the GUI has fresh data
         # even while the buffer is filling up.

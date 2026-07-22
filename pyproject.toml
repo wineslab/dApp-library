@@ -43,12 +43,13 @@ Source = "https://github.com/wineslab/dApp-library"
 [project.optional-dependencies]
 api = ["influxdb_client"]
 cnn = ["libiq"]
-gui = ["flask", "flask-socketio", "matplotlib"]
+gui = ["flask", "flask-sock", "flask-cors", "matplotlib"]
 network = ["pysctp"]
 all = [
     "pysctp",
     "flask",
-    "flask-socketio",
+    "flask-sock",
+    "flask-cors",
     "matplotlib",
     "influxdb_client",
     "libiq",
