@@ -136,7 +136,12 @@ def main(args):
                 )
     time.sleep(1)
 
-    dapp.send_subscription_request()
+    if not dapp.send_subscription_request():
+        # send_subscription_request returns True only if the gNB accepted both
+        # the L1-KPM (RF=2) and Spectrum (RF=1) subscriptions; anything else
+        # means the dApp would run deaf, so abort with a non-zero exit.
+        dapp.stop()
+        raise SystemExit("[FATAL] gNB did not accept the dApp subscriptions; aborting")
 
     # Optional sensing-policy toggle.  When --toggle-period > 0, installs
     # a periodic on/off toggle that flips the gNB's masked UL TDA

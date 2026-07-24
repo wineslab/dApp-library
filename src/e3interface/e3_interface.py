@@ -1,6 +1,7 @@
 import queue
 import random
 import threading
+import time
 import zmq
 from .e3_connector import E3Connector
 from .e3_logging import e3_logger
@@ -32,6 +33,14 @@ class E3Interface:
             # vs. inbound-thread iteration in the _handle_* dispatchers.
             self._callback_lock = threading.Lock()
             self.stop_event = threading.Event()
+            # Subscription-response correlation. The wire is fire-and-forget, so a
+            # queued request is NOT an accepted one — a queue put() succeeding
+            # says nothing about the gNB. Map each request's msgId to its
+            # ranFunctionId and record the gNB's SubscriptionResponse verdict so
+            # callers can block until the RAN actually accepts/rejects.
+            self._sub_cv = threading.Condition()
+            self._sub_pending = {}   # requestId (msgId) -> ranFunctionId
+            self._sub_results = {}   # ranFunctionId -> bool (positive?)
             self.initialized = True
 
             # Message ID management
@@ -101,14 +110,35 @@ class E3Interface:
         if isinstance(periodicity, int):
             proto_pdu['periodicity'] = periodicity
 
+        # Register the pending request so the gNB's SubscriptionResponse (which
+        # carries requestId == this msgId) can be correlated back to its RF.
+        with self._sub_cv:
+            self._sub_pending[msg_id] = ranFunctionId
+            self._sub_results.pop(ranFunctionId, None)
         try:
             # Pass raw data and message ID to outbound queue for encoding
             self.outbound_queue.put(('subscription', proto_pdu))
             e3_logger.info("Subscription request queued")
             return True
         except Exception as e:
+            with self._sub_cv:
+                self._sub_pending.pop(msg_id, None)
             e3_logger.error(f"Failed to send subscription request: {e}")
             return False
+
+    def wait_for_subscription_result(self, ran_function_id: int, timeout: float = 5.0):
+        """Block until the gNB's SubscriptionResponse for ``ran_function_id``
+        arrives. Returns True (accepted), False (rejected), or None (no response
+        within ``timeout``). This is the only authoritative signal that a
+        subscription was accepted — enqueueing the request is not."""
+        deadline = time.monotonic() + timeout
+        with self._sub_cv:
+            while ran_function_id not in self._sub_results:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+                self._sub_cv.wait(remaining)
+            return self._sub_results[ran_function_id]
 
     def send_message_ack(self, requestId: int, responseCode: str = "positive"):
         """Send a message acknowledgment"""
@@ -292,6 +322,15 @@ class E3Interface:
 
     def _handle_subscription_response(self, data):
         dapp_id = data['dAppIdentifier']
+        # Correlate to the pending request by requestId and record the verdict so
+        # wait_for_subscription_result() can unblock the caller.
+        request_id = data.get('requestId')
+        positive = data.get('responseCode') == 'positive'
+        with self._sub_cv:
+            rfid = self._sub_pending.pop(request_id, None)
+            if rfid is not None:
+                self._sub_results[rfid] = positive
+                self._sub_cv.notify_all()
         with self._callback_lock:
             e3_logger.debug(f"DApp ID requested {dapp_id}, map status {self.subscription_callbacks}")
             callbacks = list(self.subscription_callbacks.get(dapp_id, []))

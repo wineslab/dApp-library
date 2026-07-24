@@ -13,11 +13,13 @@ These cover the two behaviour changes in the DAppControlData envelope release:
 import os
 import sys
 import threading
+import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import spectrum.spectrum_dapp as sd
 from spectrum.spectrum_dapp import SpectrumSharingDApp
+from e3interface.e3_interface import E3Interface
 
 
 def _bare_dapp():
@@ -120,3 +122,61 @@ def test_clear_prb_blocks_is_unconditional():
     # One control sent even though _prb_block_sent was empty, and it is a clear.
     assert len(d.e3_interface.controls) == 1
     assert _sent_sets(d.e3_interface) == [set()]
+
+
+def _bare_iface():
+    """An E3Interface with only the subscription-correlation state."""
+    iface = object.__new__(E3Interface)
+    iface.subscription_callbacks = {}
+    iface._callback_lock = threading.Lock()
+    iface._sub_cv = threading.Condition()
+    iface._sub_pending = {}
+    iface._sub_results = {}
+    iface.stop_event = threading.Event()
+    iface.stop_event.set()  # keep __del__ from touching connections on GC
+    return iface
+
+
+def test_subscription_result_tied_to_gnb_response():
+    """A queued request is not an accepted one: wait_for_subscription_result
+    reflects the gNB's SubscriptionResponse (by requestId), or None on timeout."""
+    iface = _bare_iface()
+
+    # No response yet for a pending RF=1 request → timeout returns None.
+    with iface._sub_cv:
+        iface._sub_pending[42] = 1
+    assert iface.wait_for_subscription_result(1, timeout=0.05) is None
+
+    # Positive response (requestId 42) → accepted.
+    iface._handle_subscription_response(
+        {"dAppIdentifier": 7, "requestId": 42, "responseCode": "positive", "subscriptionId": 3}
+    )
+    assert iface.wait_for_subscription_result(1, timeout=0.05) is True
+
+    # Negative response for a different RF → rejected.
+    with iface._sub_cv:
+        iface._sub_pending[43] = 2
+    iface._handle_subscription_response(
+        {"dAppIdentifier": 7, "requestId": 43, "responseCode": "negative"}
+    )
+    assert iface.wait_for_subscription_result(2, timeout=0.05) is False
+
+
+def test_subscription_wait_unblocks_on_async_response():
+    """A response arriving on another thread unblocks a waiter promptly."""
+    iface = _bare_iface()
+    with iface._sub_cv:
+        iface._sub_pending[7] = 1
+
+    def responder():
+        time.sleep(0.05)
+        iface._handle_subscription_response(
+            {"dAppIdentifier": 1, "requestId": 7, "responseCode": "positive"}
+        )
+
+    t = threading.Thread(target=responder)
+    t.start()
+    try:
+        assert iface.wait_for_subscription_result(1, timeout=2.0) is True
+    finally:
+        t.join(timeout=2)

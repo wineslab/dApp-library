@@ -984,8 +984,11 @@ class SpectrumSharingDApp(DApp):
         subscription therefore requests the sensing telemetry id in addition
         to the two control ids.
 
-        Returns the L1 subscription's scheduled status; the Spectrum-SM
-        subscription is best-effort.
+        Returns True only if BOTH subscriptions are accepted by the gNB. The
+        wire is fire-and-forget (a queued request is not an accepted one), so we
+        block on each function's gNB SubscriptionResponse before proceeding and
+        return False on a rejection or a missing response. The caller must treat
+        False as fatal.
 
         The two requests are queued ~50 ms apart instead of back-to-back.
         With zero spacing libe3's setup-loop on the gNB only sees one of
@@ -995,6 +998,11 @@ class SpectrumSharingDApp(DApp):
         per-message handling window). 50 ms is well above the threshold
         and an imperceptible delay at dApp startup."""
         l1_scheduled = super().send_subscription_request(subscriptionTime, periodicity)
+        if not l1_scheduled:
+            dapp_logger.error(
+                f"L1-KPM SM RF={self.RAN_FUNCTION_ID} subscription could not be queued"
+            )
+            return False
 
         # Stagger the second subscription so libe3's setup loop processes
         # the first one cleanly before the second arrives. Without this,
@@ -1027,15 +1035,31 @@ class SpectrumSharingDApp(DApp):
             time.sleep(0.05)
         if not spectrum_scheduled:
             dapp_logger.error(
-                f"Spectrum SM RF={self.PRB_CONTROL_RAN_FUNCTION_ID} subscription failed; "
-                "sensing telemetry and PRB/sensing-policy controls would be unavailable"
+                f"Spectrum SM RF={self.PRB_CONTROL_RAN_FUNCTION_ID} subscription could not "
+                "be queued after retries"
             )
             return False
+
+        # Both requests are queued; now confirm the gNB actually ACCEPTED each
+        # one (the queue put() above says nothing about the RAN). Without RF=1
+        # the sensing cache stays empty forever and controls are dropped
+        # gNB-side; without RF=2 no IQ ever arrives. Either failure is fatal.
+        for rf, name in ((self.RAN_FUNCTION_ID, "L1-KPM"),
+                         (self.PRB_CONTROL_RAN_FUNCTION_ID, "Spectrum")):
+            verdict = self.e3_interface.wait_for_subscription_result(rf, timeout=5.0)
+            if verdict is not True:
+                reason = ("rejected by the gNB" if verdict is False
+                          else "no SubscriptionResponse within 5s")
+                dapp_logger.error(
+                    f"{name} SM RF={rf} subscription not accepted ({reason}); aborting"
+                )
+                return False
+
         if self.control:
             # Drop any sticky PRB blocks a previous dApp instance left installed
             # on the gNB before this instance starts blocking from a clean slate.
             self.clear_prb_blocks()
-        return l1_scheduled
+        return True
 
     def _decode_spectrum_message(self, message_type: str, data: bytes) -> dict:
         """Decode a spectrum message using the configured encoding method."""

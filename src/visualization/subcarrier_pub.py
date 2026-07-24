@@ -12,7 +12,9 @@ format (multipart), matching the visualizer's zmq_receiver:
 
 from __future__ import annotations
 
+import atexit
 import os
+import signal
 import subprocess
 import sys
 
@@ -22,6 +24,23 @@ import zmq
 from e3interface.e3_logging import dapp_logger
 
 _VISUALIZER = os.path.join(os.path.dirname(__file__), "subcarrier", "subcarrier_visualizer.py")
+
+
+def _child_preexec():
+    """Run in the spawned child before exec (Linux only).
+
+    Ask the kernel to SIGKILL this child when the parent dies (PR_SET_PDEATHSIG)
+    so a hard SIGKILL of the dApp — which atexit/signal handlers can't catch —
+    still can't orphan the visualizer holding web :5001. Best-effort: any failure
+    is ignored (start_new_session + stop() still cover the graceful paths)."""
+    try:
+        import ctypes
+        import ctypes.util
+        libc = ctypes.CDLL(ctypes.util.find_library("c") or "libc.so.6", use_errno=True)
+        PR_SET_PDEATHSIG = 1
+        libc.prctl(PR_SET_PDEATHSIG, signal.SIGKILL)
+    except Exception:
+        pass
 
 
 class SubcarrierPublisher:
@@ -52,6 +71,10 @@ class SubcarrierPublisher:
             )
             return
         self._viz = self._spawn(web_port, zmq_port) if spawn_viz else None
+        if self._viz is not None:
+            # Cover graceful teardown (normal exit, sys.exit, unhandled
+            # exception); the child's PR_SET_PDEATHSIG covers a hard kill.
+            atexit.register(self.stop)
         dapp_logger.info(
             "SubcarrierPublisher bound tcp://*:%d (visualizer %s, web :%d, %d PRB)",
             zmq_port, "spawned" if self._viz else "external", web_port, self._num_prbs,
@@ -65,11 +88,15 @@ class SubcarrierPublisher:
         try:
             # --ctrl-port 0 disables the visualizer's control proxy: the Python
             # dApp binds no REP, and 5560 may belong to a co-resident C++ dApp.
+            # start_new_session puts the child in its own process group so stop()
+            # can kill the whole group; preexec sets PR_SET_PDEATHSIG on Linux.
             proc = subprocess.Popen(
                 [sys.executable, _VISUALIZER, "--port", str(web_port),
                  "--zmq-port", str(zmq_port), "--num-prbs", str(self._num_prbs),
                  "--ctrl-port", "0"],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                start_new_session=True,
+                preexec_fn=_child_preexec if sys.platform.startswith("linux") else None,
             )
         except Exception:
             dapp_logger.exception("Failed to spawn subcarrier visualizer")
@@ -134,11 +161,30 @@ class SubcarrierPublisher:
                 pass
             self._sock = None
         if self._viz is not None:
-            self._viz.terminate()
+            # Signal the child's whole process group (start_new_session made it a
+            # group leader) so any grandchildren die too and nothing keeps :5001.
+            try:
+                pgid = os.getpgid(self._viz.pid)
+            except (ProcessLookupError, OSError):
+                pgid = None
+
+            def _sig_group(sig):
+                if pgid is not None:
+                    try:
+                        os.killpg(pgid, sig)
+                    except (ProcessLookupError, OSError):
+                        pass
+                else:
+                    try:
+                        self._viz.send_signal(sig)
+                    except (ProcessLookupError, OSError):
+                        pass
+
+            _sig_group(signal.SIGTERM)
             try:
                 self._viz.wait(timeout=3)
             except subprocess.TimeoutExpired:
-                self._viz.kill()
+                _sig_group(signal.SIGKILL)
                 try:
                     self._viz.wait(timeout=3)
                 except subprocess.TimeoutExpired:
