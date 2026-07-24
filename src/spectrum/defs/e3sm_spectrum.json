@@ -31,6 +31,25 @@
         "description"
       ]
     },
+    "Spectrum-SensingIndication": {
+      "type": "object",
+      "properties": {
+        "sensing_shm": {
+          "type": "object",
+          "properties": {
+            "shm_name": { "type": "string" },
+            "write_idx": { "type": "integer", "minimum": 0, "maximum": 65535 },
+            "n_ranges": { "type": "integer", "minimum": 0, "maximum": 128 }
+          },
+          "required": ["shm_name", "write_idx", "n_ranges"]
+        },
+        "timestamp": { "type": "integer", "minimum": 0 },
+        "sfn": { "type": "integer", "minimum": 0, "maximum": 65535 },
+        "slot": { "type": "integer", "minimum": 0, "maximum": 65535 },
+        "beam": { "type": "integer", "minimum": 0, "maximum": 3 }
+      },
+      "required": ["sensing_shm", "timestamp", "sfn", "slot"]
+    },
     "Spectrum-IQDataIndication": {
       "type": "object",
       "properties": {
@@ -83,6 +102,32 @@
         "blacklistedPRBs"
       ]
     },
+    "Spectrum-SensingPolicyControl": {
+      "type": "object",
+      "properties": {
+        "maskPerSlot": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 160,
+          "items": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 16383
+          }
+        },
+        "deactivate": {
+          "type": "boolean"
+        },
+        "validityPeriod": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3600
+        }
+      },
+      "required": [
+        "maskPerSlot"
+      ]
+    },
     "Spectrum-PRBBlockedControl": {
       "type": "object",
       "properties": {
@@ -132,6 +177,74 @@
       "required": [
         "blacklistedPRBs"
       ]
+    },
+    "Spectrum-IndicationData": {
+      "type": "object",
+      "properties": {
+        "indicationType": { "type": "string", "enum": ["iqData"] },
+        "indicationPayload": {
+          "type": "object",
+          "properties": {
+            "iqDataIndication": { "$ref": "#/$defs/Spectrum-IQDataIndication" }
+          },
+          "oneOf": [
+            { "required": ["iqDataIndication"] }
+          ]
+        }
+      },
+      "required": ["indicationType", "indicationPayload"]
+    },
+    "Spectrum-DAppControlData": {
+      "type": "object",
+      "properties": {
+        "controlType": { "type": "string", "enum": ["prbBlacklist", "sensingPolicy"] },
+        "controlPayload": {
+          "type": "object",
+          "properties": {
+            "prbBlacklistControl":  { "$ref": "#/$defs/Spectrum-PRBBlacklistControl" },
+            "sensingPolicyControl": { "$ref": "#/$defs/Spectrum-SensingPolicyControl" }
+          },
+          "oneOf": [
+            { "required": ["prbBlacklistControl"] },
+            { "required": ["sensingPolicyControl"] }
+          ]
+        }
+      },
+      "required": ["controlType", "controlPayload"]
+    },
+    "Spectrum-DAppReportData": {
+      "type": "object",
+      "properties": {
+        "reportType": { "type": "string", "enum": ["prbBlacklist"] },
+        "reportPayload": {
+          "type": "object",
+          "properties": {
+            "prbBlacklistReport": { "$ref": "#/$defs/Spectrum-PRBBlacklistReport" }
+          },
+          "oneOf": [
+            { "required": ["prbBlacklistReport"] }
+          ]
+        }
+      },
+      "required": ["reportType", "reportPayload"]
+    },
+    "Spectrum-XAppControlData": {
+      "type": "object",
+      "properties": {
+        "controlType": { "type": "string", "enum": ["prbBlocked", "config"] },
+        "controlPayload": {
+          "type": "object",
+          "properties": {
+            "prbBlockedControl": { "$ref": "#/$defs/Spectrum-PRBBlockedControl" },
+            "configControl": { "$ref": "#/$defs/Spectrum-ConfigControl" }
+          },
+          "oneOf": [
+            { "required": ["prbBlockedControl"] },
+            { "required": ["configControl"] }
+          ]
+        }
+      },
+      "required": ["controlType", "controlPayload"]
     }
   }
 }

@@ -20,6 +20,7 @@ from abc import ABC, abstractmethod
 
 import numpy as np
 
+from e3interface.e3_logging import dapp_logger
 from spectrum.adaptive_noise_floor import AdaptiveNoiseFloor
 from spectrum.embargo_manager import EmbargoManager
 
@@ -37,8 +38,13 @@ class ThresholdDetector(ABC):
         self,
         abs_iq_shifted: np.ndarray,
         timestamp: float,
+        valid_mask: np.ndarray | None = None,
     ) -> tuple[bool, np.ndarray, np.ndarray | None, np.ndarray | None]:
         """Process one magnitude spectrum and return detection results.
+
+        ``valid_mask`` (optional bool array) marks bins that carry real
+        in-window energy; bins where it is False are excluded from the
+        adaptive noise-floor history. Ignored by static detectors.
 
         Parameters
         ----------
@@ -109,6 +115,7 @@ class StaticThresholdDetector(ThresholdDetector):
         self,
         abs_iq_shifted: np.ndarray,
         timestamp: float,
+        valid_mask: np.ndarray | None = None,
     ) -> tuple[bool, np.ndarray, np.ndarray | None, np.ndarray | None]:
         self._acc += abs_iq_shifted
         self._count += 1
@@ -174,6 +181,13 @@ class AdaptiveThresholdDetector(ThresholdDetector):
         self._fft_size = fft_size
         self._noise_floor_est = AdaptiveNoiseFloor(n=fft_size, x=hist_depth)
         self._embargo = EmbargoManager(n_bins=fft_size, hold_time=embargo_timeout_secs)
+        # Clamp floor for the 20·log10 below. It assumes the reader rescaled FP16
+        # by 1/fp16_beta into a Q1.15 scale (magnitudes >> 1). If the dApp and
+        # gNB fp16_beta disagree, every magnitude falls below the floor, power
+        # and noise floor collapse to 0 dB, SNR is 0 everywhere and detection
+        # goes silent with no error — so we assert the operating range once.
+        self._mag_floor = 1.0
+        self._range_checked = False
 
     # ------------------------------------------------------------------
     # ThresholdDetector interface
@@ -183,8 +197,9 @@ class AdaptiveThresholdDetector(ThresholdDetector):
         self,
         abs_iq_shifted: np.ndarray,
         timestamp: float,
+        valid_mask: np.ndarray | None = None,
     ) -> tuple[bool, np.ndarray, np.ndarray | None, np.ndarray | None]:
-        self._noise_floor_est.update(abs_iq_shifted)
+        self._noise_floor_est.update(abs_iq_shifted, valid_mask)
 
         # Compute per-bin power in dB on every call so the GUI has fresh data
         # even while the buffer is filling up.
@@ -194,11 +209,26 @@ class AdaptiveThresholdDetector(ThresholdDetector):
         # (StaticThresholdDetector uses 1e-6 to preserve the full dynamic range
         # for its fixed absolute threshold; here the threshold is relative.)
         power_db = (
-            20.0 * np.log10(np.maximum(abs_iq_shifted, 1.0))
+            20.0 * np.log10(np.maximum(abs_iq_shifted, self._mag_floor))
         ).astype(np.float32)
 
         if not self._noise_floor_est.is_ready:
             return False, np.zeros(self._fft_size, dtype=bool), None, None
+
+        # One-time operating-range assertion: once we have enough history, a
+        # peak magnitude below the clamp floor means everything collapses to
+        # 0 dB (see _mag_floor) — almost always an fp16_beta mismatch.
+        if not self._range_checked:
+            self._range_checked = True
+            peak = float(np.max(abs_iq_shifted)) if abs_iq_shifted.size else 0.0
+            if peak < self._mag_floor:
+                dapp_logger.error(
+                    "AdaptiveThresholdDetector: peak magnitude %.3g < clamp floor "
+                    "%.3g — every bin collapses to 0 dB and detection is disabled. "
+                    "This almost always means the dApp fp16_beta does not match the "
+                    "gNB E3Configuration.fp16_beta (the reader rescales by 1/beta).",
+                    peak, self._mag_floor,
+                )
 
         noise_floor = self._noise_floor_est.get_noise_floor()  # float32
         noise_floor_db = (

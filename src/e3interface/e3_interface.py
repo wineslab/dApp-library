@@ -1,6 +1,7 @@
 import queue
 import random
 import threading
+import time
 import zmq
 from .e3_connector import E3Connector
 from .e3_logging import e3_logger
@@ -32,6 +33,14 @@ class E3Interface:
             # vs. inbound-thread iteration in the _handle_* dispatchers.
             self._callback_lock = threading.Lock()
             self.stop_event = threading.Event()
+            # Subscription-response correlation. The wire is fire-and-forget, so a
+            # queued request is NOT an accepted one — a queue put() succeeding
+            # says nothing about the gNB. Map each request's msgId to its
+            # ranFunctionId and record the gNB's SubscriptionResponse verdict so
+            # callers can block until the RAN actually accepts/rejects.
+            self._sub_cv = threading.Condition()
+            self._sub_pending = {}   # requestId (msgId) -> ranFunctionId
+            self._sub_results = {}   # ranFunctionId -> bool (positive?)
             self.initialized = True
 
             # Message ID management
@@ -101,14 +110,35 @@ class E3Interface:
         if isinstance(periodicity, int):
             proto_pdu['periodicity'] = periodicity
 
+        # Register the pending request so the gNB's SubscriptionResponse (which
+        # carries requestId == this msgId) can be correlated back to its RF.
+        with self._sub_cv:
+            self._sub_pending[msg_id] = ranFunctionId
+            self._sub_results.pop(ranFunctionId, None)
         try:
             # Pass raw data and message ID to outbound queue for encoding
             self.outbound_queue.put(('subscription', proto_pdu))
             e3_logger.info("Subscription request queued")
             return True
         except Exception as e:
+            with self._sub_cv:
+                self._sub_pending.pop(msg_id, None)
             e3_logger.error(f"Failed to send subscription request: {e}")
             return False
+
+    def wait_for_subscription_result(self, ran_function_id: int, timeout: float = 5.0):
+        """Block until the gNB's SubscriptionResponse for ``ran_function_id``
+        arrives. Returns True (accepted), False (rejected), or None (no response
+        within ``timeout``). This is the only authoritative signal that a
+        subscription was accepted — enqueueing the request is not."""
+        deadline = time.monotonic() + timeout
+        with self._sub_cv:
+            while ran_function_id not in self._sub_results:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+                self._sub_cv.wait(remaining)
+            return self._sub_results[ran_function_id]
 
     def send_message_ack(self, requestId: int, responseCode: str = "positive"):
         """Send a message acknowledgment"""
@@ -154,41 +184,69 @@ class E3Interface:
             while not self.stop_event.is_set():
                 data = self.e3_connector.receive()
                 if not data:
-                    e3_logger.error(f'No data received, connection closed, end')
+                    # Transport-level loss (gNB restart, socket closed, etc.).
+                    # Make this loud + set stop_event so the main thread exits
+                    # cleanly; a process supervisor (systemd, k8s restart
+                    # policy) can then bring the dApp back up against the
+                    # restarted gNB. Without this, the dApp would silently
+                    # go deaf — no indications, no log, no recovery.
+                    e3_logger.critical(
+                        'Transport-level connection lost (receive returned no data); '
+                        'setting stop_event so the dApp exits cleanly'
+                    )
+                    self.stop_event.set()
                     break
                 e3_logger.debug(f'Received data size: {len(data)}')
-                # e3_logger.debug(data.hex())
-                pdu = self.encoder.decode_pdu(data)
-                pdu_type, pdu_data, msg_id = pdu
-                e3_logger.debug(f"Data decoded")
-                match pdu_type:
-                    case "subscriptionResponse":
-                        e3_subscription_response = pdu_data
-                        e3_logger.info(
-                            f"Received subscription response: {e3_subscription_response}"
-                        )
-                        self._handle_subscription_response(e3_subscription_response)
+                # Per-PDU resilience: any decode/dispatch failure must NOT
+                # kill the inbound loop. The original behaviour caught the
+                # exception at the outer try/except (line 195) and set
+                # stop_event for the whole dApp, so one malformed PDU
+                # (older gNB with a different schema variant, a transient
+                # encoder bug, etc.) would tear the process down. Log
+                # loudly and continue.
+                try:
+                    pdu = self.encoder.decode_pdu(data)
+                    pdu_type, pdu_data, msg_id = pdu
+                    e3_logger.debug(f"Data decoded")
+                    match pdu_type:
+                        case "subscriptionResponse":
+                            e3_subscription_response = pdu_data
+                            e3_logger.info(
+                                f"Received subscription response: {e3_subscription_response}"
+                            )
+                            self._handle_subscription_response(e3_subscription_response)
 
-                    case "indicationMessage":
-                        e3_indication_message = pdu_data
-                        dapp_identifier = e3_indication_message['dAppIdentifier']
-                        protocolData = e3_indication_message['protocolData']
-                        e3_logger.debug(f"Indication message for dApp {dapp_identifier}, protocolData {len(protocolData)} bytes")
-                        self._handle_indication_data(dapp_identifier, protocolData)
+                        case "indicationMessage":
+                            e3_indication_message = pdu_data
+                            dapp_identifier = e3_indication_message['dAppIdentifier']
+                            ran_function_id = e3_indication_message['ranFunctionIdentifier']
+                            protocolData = e3_indication_message['protocolData']
+                            e3_logger.debug(f"Indication message for dApp {dapp_identifier}, RF={ran_function_id}, protocolData {len(protocolData)} bytes")
+                            self._handle_indication_data(dapp_identifier, ran_function_id, protocolData)
 
-                    case "messageAck":
-                        e3_message_ack = pdu_data
-                        e3_logger.debug(f"Received message ACK: {e3_message_ack}")
-                        # Just log the ACK, no correlation needed atm
-                        continue
+                        case "messageAck":
+                            e3_message_ack = pdu_data
+                            e3_logger.debug(f"Received message ACK: {e3_message_ack}")
+                            # Just log the ACK, no correlation needed atm
+                            continue
 
-                    case "xAppControlAction":
-                        e3_xapp_control_action = pdu_data
-                        dapp_identifier = e3_xapp_control_action['dAppIdentifier']
-                        self._handle_xapp_control_data(dapp_identifier, e3_xapp_control_action)
+                        case "xAppControlAction":
+                            e3_xapp_control_action = pdu_data
+                            dapp_identifier = e3_xapp_control_action['dAppIdentifier']
+                            self._handle_xapp_control_data(dapp_identifier, e3_xapp_control_action)
 
-                    case _:
-                        raise ValueError("Unrecognized PDU type ", pdu_type)
+                        case _:
+                            e3_logger.warning(
+                                "Unrecognized PDU type %r — dropping and continuing",
+                                pdu_type,
+                            )
+                except Exception:
+                    e3_logger.exception(
+                        "PDU decode/dispatch failed (data_size=%d); "
+                        "dropping this message and continuing",
+                        len(data) if data else 0,
+                    )
+                    continue
         except KeyboardInterrupt:
             e3_logger.debug("Inbound thread received SIGINT, stopping")
             self.stop_event.set()
@@ -196,7 +254,11 @@ class E3Interface:
             e3_logger.debug("Inbound connection context terminated, exiting")
             self.stop_event.set()
         except Exception:
-            e3_logger.exception(f"Error in inbound thread")
+            # Reaches here only on TRANSPORT-level errors that escape the
+            # per-PDU handler above (e.g. the connector's receive() raises).
+            # In that case we have lost the channel — same recovery story
+            # as the "no data" branch.
+            e3_logger.exception(f"Transport error in inbound thread")
             self.stop_event.set()
         finally:
             e3_logger.info("Close inbound connection")
@@ -260,6 +322,15 @@ class E3Interface:
 
     def _handle_subscription_response(self, data):
         dapp_id = data['dAppIdentifier']
+        # Correlate to the pending request by requestId and record the verdict so
+        # wait_for_subscription_result() can unblock the caller.
+        request_id = data.get('requestId')
+        positive = data.get('responseCode') == 'positive'
+        with self._sub_cv:
+            rfid = self._sub_pending.pop(request_id, None)
+            if rfid is not None:
+                self._sub_results[rfid] = positive
+                self._sub_cv.notify_all()
         with self._callback_lock:
             e3_logger.debug(f"DApp ID requested {dapp_id}, map status {self.subscription_callbacks}")
             callbacks = list(self.subscription_callbacks.get(dapp_id, []))
@@ -270,18 +341,31 @@ class E3Interface:
         else:
             e3_logger.warning(f"No subscription callback registered for dApp {dapp_id}")
 
-    def _handle_indication_data(self, dapp_identifier, data):
+    def _handle_indication_data(self, dapp_identifier, ran_function_id, data):
+        # Snapshot the matching callbacks under the lock (#83: never iterate the
+        # live dict while it may be mutated from another thread), then invoke
+        # outside the lock. De-duplicate while preserving order: the same
+        # callback can be registered under multiple (dAppId, subscriptionId)
+        # keys (e.g. the base DApp registers _handle_indication under
+        # subscriptionId 0), and must fire at most once per indication.
         with self._callback_lock:
-            callbacks = [
+            snapshot = [
                 callback
                 for key, cbs in self.indication_callbacks.items()
                 if key[0] == dapp_identifier
                 for callback in cbs
             ]
+        seen = set()
+        callbacks = []
+        for callback in snapshot:
+            if callback in seen:
+                continue
+            seen.add(callback)
+            callbacks.append(callback)
         if callbacks:
-            e3_logger.debug(f"Launch {len(callbacks)} callback(s) for dApp {dapp_identifier}")
+            e3_logger.debug(f"Launch {len(callbacks)} unique callback(s) for dApp {dapp_identifier}")
             for callback in callbacks:
-                callback(dapp_identifier, data)
+                callback(dapp_identifier, ran_function_id, data)
         else:
             e3_logger.warning(f"No indication callback registered for dApp {dapp_identifier}")
 

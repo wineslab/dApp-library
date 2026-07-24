@@ -68,7 +68,7 @@ class SimpleDApp(DApp):
     # ---- E3AP callbacks -------------------------------------------------- #
 
     @override
-    def _handle_indication(self, dapp_identifier, data: bytes):
+    def _handle_indication(self, dapp_identifier, ran_function_id, data: bytes):
         """Process a raw indication payload from the TEST service model.
 
         The simple_agent sends 16 bytes:
@@ -185,18 +185,64 @@ class SimpleDApp(DApp):
         """
         return self._decode_simple_message("Simple-RanFunctionData", data_bytes)
 
-    # Convenience wrappers for common simple message types
+    # Envelope-aware wrappers ------------------------------------------- #
+    # Each direction has a (Type, Payload) envelope; the inner type is
+    # selected via the CHOICE arm. asn1tools represents CHOICE values as
+    # ("alternative_name", value) tuples.
+
     def decode_indication(self, data: bytes) -> dict:
-        return self._decode_simple_message("Simple-Indication", data)
+        """Decode a Simple-IndicationData envelope and return the inner
+        Simple-Indication payload (the only variant today)."""
+        env = self._decode_simple_message("Simple-IndicationData", data)
+        if self.encoding_method == "asn1":
+            payload_key, payload = env["indicationPayload"]
+        else:
+            payload_dict = env["indicationPayload"]
+            payload_key, payload = next(iter(payload_dict.items()))
+        if payload_key != "simpleIndication":
+            raise ValueError(f"unexpected indication variant: {payload_key!r}")
+        return payload
 
     def create_control(self, control_payload: dict) -> bytes:
-        return self._encode_simple_message("Simple-Control", control_payload)
+        """Wrap a Simple-Control payload in the Simple-DAppControlData envelope."""
+        if self.encoding_method == "asn1":
+            envelope = {
+                "controlType": "simple",
+                "controlPayload": ("simpleControl", control_payload),
+            }
+        else:
+            envelope = {
+                "controlType": "simple",
+                "controlPayload": {"simpleControl": control_payload},
+            }
+        return self._encode_simple_message("Simple-DAppControlData", envelope)
 
     def decode_config_control(self, data: bytes) -> dict:
-        return self._decode_simple_message("Simple-ConfigControl", data)
+        """Decode a Simple-XAppControlData envelope and return the inner
+        Simple-ConfigControl payload."""
+        env = self._decode_simple_message("Simple-XAppControlData", data)
+        if self.encoding_method == "asn1":
+            payload_key, payload = env["controlPayload"]
+        else:
+            payload_dict = env["controlPayload"]
+            payload_key, payload = next(iter(payload_dict.items()))
+        if payload_key != "configControl":
+            raise ValueError(f"unexpected xApp control variant: {payload_key!r}")
+        return payload
 
     def create_report(self, report_payload: dict) -> bytes:
-        return self._encode_simple_message("Simple-DAppReport", report_payload)
+        """Wrap a Simple-DAppReport payload in the Simple-DAppReportData envelope."""
+        if self.encoding_method == "asn1":
+            envelope = {
+                "reportType": "simple",
+                "reportPayload": ("simpleReport", report_payload),
+            }
+        else:
+            envelope = {
+                "reportType": "simple",
+                "reportPayload": {"simpleReport": report_payload},
+            }
+        return self._encode_simple_message("Simple-DAppReportData", envelope)
 
     # ---- Control ------------------------------------------------ #
 
