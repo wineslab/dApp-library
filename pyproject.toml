@@ -19,13 +19,20 @@ classifiers = [
 ]
 license = "Apache-2.0"
 license-files = ["LICENSE"]
+# NOTE: E3AP transport is provided by libe3's Python bindings (`libe3py`),
+# which are not on PyPI. Install them into this environment with:
+#   cd ~/libe3 && ./build_libe3 --install --enable-swig \
+#     --cmake-opt "-DLIBE3_ENABLE_ASN1=ON -DLIBE3_ENABLE_JSON=ON"
+# (asn1tools is still required for the in-Python service-model codecs.)
 dependencies = [
     "asn1tools",
     "typing_extensions",
     "numpy",
-    "pyzmq",
     "sigmf",
     "jsonschema>=4.18.0",
+    # protobuf E3SM codec path (spectrum/simple SMs); >=4.21 for FieldDescriptor
+    # .has_presence and the current generated-code format.
+    "protobuf>=4.21",
 ]
 
 authors = [
@@ -43,7 +50,7 @@ Source = "https://github.com/wineslab/dApp-library"
 [project.optional-dependencies]
 api = ["influxdb_client"]
 cnn = ["libiq"]
-gui = ["flask", "flask-sock", "flask-cors", "matplotlib"]
+gui = ["flask", "flask-sock", "flask-cors", "matplotlib", "pyzmq"]
 network = ["pysctp"]
 all = [
     "pysctp",
@@ -51,6 +58,7 @@ all = [
     "flask-sock",
     "flask-cors",
     "matplotlib",
+    "pyzmq",
     "influxdb_client",
     "libiq",
 ]
@@ -72,6 +80,10 @@ wheel.packages = [
     "src/simple",
     "src/iq_saver",
     "src/visualization",
+    # Ship the runnable examples so they can be launched from the installed
+    # wheel via `python -m examples.<name>` (e.g. the OAI rfsim CI driving the
+    # real spectrum dApp) instead of a hand-rolled launcher.
+    "examples",
 ]
 
 # Include the libiqsaver C++ tree and the root CMake in the sdist so

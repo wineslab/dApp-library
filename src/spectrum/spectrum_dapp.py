@@ -19,7 +19,7 @@ import jsonschema
 # np.set_printoptions(threshold=sys.maxsize)
 
 from dapp.dapp import DApp
-from e3interface.e3_encoder import JsonE3Encoder
+from e3interface import sm_helpers
 from e3interface.e3_logging import dapp_logger, LOG_DIR
 from spectrum.e3_ran_buffers_reader import (
     E3RanBuffersReader,
@@ -187,6 +187,21 @@ class SpectrumSharingDApp(DApp):
     _SPECTRUM_JSON_BINARY_FIELDS = {
         "Spectrum-PRBBlacklistControl": ["blacklistedPRBs"],
         "Spectrum-PRBBlacklistReport": ["blacklistedPRBs"]
+    }
+
+    # ASN.1 message-type name -> protobuf message class name in
+    # defs/e3sm_spectrum_pb2 (used only on the protobuf encoding path).
+    _SPECTRUM_PB_TYPES = {
+        "Spectrum-DAppControlData": "SpectrumDAppControlData",
+        "Spectrum-DAppReportData": "SpectrumDAppReportData",
+        "Spectrum-XAppControlData": "SpectrumXAppControlData",
+        "Spectrum-SensingIndication": "SpectrumSensingIndication",
+        "Spectrum-PRBBlacklistControl": "SpectrumPRBBlacklistControl",
+        "Spectrum-PRBBlacklistReport": "SpectrumPRBBlacklistReport",
+        "Spectrum-PRBBlockedControl": "SpectrumPRBBlockedControl",
+        "Spectrum-ConfigControl": "SpectrumConfigControl",
+        "Spectrum-SensingPolicyControl": "SpectrumSensingPolicyControl",
+        "Spectrum-RanFunctionData": "SpectrumRanFunctionData",
     }
 
     # dApp metadata
@@ -577,6 +592,15 @@ class SpectrumSharingDApp(DApp):
                 self.spectrum_registry = self._build_spectrum_registry()
                 self.spectrum_encoder = "json"
                 dapp_logger.info("Spectrum JSON encoder initialized")
+            case "protobuf":
+                # Lazy import: only the protobuf path needs the generated stubs
+                # (and the protobuf runtime). The .proto is the interop contract
+                # with the gNB's protobuf-c encoder; field json_names are pinned
+                # so json_format bridges directly to the dApp's dict keys.
+                from .defs import e3sm_spectrum_pb2 as _spectrum_pb2
+                self._spectrum_pb2 = _spectrum_pb2
+                self.spectrum_encoder = "protobuf"
+                dapp_logger.info("Spectrum protobuf encoder initialized")
             case _:
                 raise ValueError(f"Unsupported encoding method: {self.encoding_method}")
 
@@ -593,7 +617,7 @@ class SpectrumSharingDApp(DApp):
     def _validate_spectrum_message(self, message_type: str, data: dict) -> None:
         """Validate a spectrum message dict against its schema definition.
 
-        Same gotcha as e3interface.e3_encoder: passing the subschema directly
+        Gotcha: passing the subschema directly
         breaks `#/$defs/...` resolution because the validator's current
         resource is the subschema (no $defs). Use a $ref into the registered
         URI so the registry handles ref resolution against the full schema.
@@ -861,9 +885,24 @@ class SpectrumSharingDApp(DApp):
     # flavours (control/report encode, indication/xapp-control decode) are
     # one-line wrappers below.
 
+    def _spectrum_pb_new(self, msg_type: str):
+        """Instantiate the protobuf message class for an ASN.1 message-type name."""
+        cls = getattr(self._spectrum_pb2, self._SPECTRUM_PB_TYPES[msg_type])
+        return cls()
+
     def _encode_envelope(self, *, msg_type: str, type_field: str, payload_field: str,
                          type_value: str, payload_key: str, inner_type: str,
                          inner: dict) -> bytes:
+        if self.encoding_method == "protobuf":
+            # The ASN.1 CHOICE maps to a proto3 oneof: setting the member named
+            # `payload_key` is the discriminator (no separate type field on the
+            # wire). json_format bridges the native-typed `inner` dict (list of
+            # ints / scalars, same shape the ASN.1 path uses) to the message via
+            # the pinned json_names.
+            from google.protobuf import json_format
+            msg = self._spectrum_pb_new(msg_type)
+            json_format.ParseDict({payload_key: inner}, msg)
+            return msg.SerializeToString()
         if self.encoding_method == "asn1":
             # The gNB's ASN.1 "*Data" envelopes are payload-only SEQUENCEs: the
             # CHOICE alternative is the on-wire discriminator, so NO separate
@@ -877,7 +916,7 @@ class SpectrumSharingDApp(DApp):
             # payload. The gNB's JSON decoder treats it as OPTIONAL (and only
             # validates it when present), so emitting it is safe and aids
             # cross-checking / dashboards.
-            prepared = JsonE3Encoder.prepare_data_for_json_encode(
+            prepared = sm_helpers.prepare_data_for_json_encode(
                 inner_type, inner.copy(), self._SPECTRUM_JSON_BINARY_FIELDS
             )
             envelope = {type_field: type_value, payload_field: {payload_key: prepared}}
@@ -896,6 +935,17 @@ class SpectrumSharingDApp(DApp):
         path the type comes from the envelope's optional ``type_field``.
         """
         type_by_key = type_by_key or {}
+        if self.encoding_method == "protobuf":
+            # The set oneof member is a top-level key in the converted dict (the
+            # oneof name is not a wire field), giving {payloadKey: {...}}.
+            msg = self._spectrum_pb_new(msg_type)
+            msg.ParseFromString(bytes(data))
+            d = sm_helpers.pb_message_to_dict(msg)
+            if not d:
+                return {"type": None, "payload_key": None, "payload": {}}
+            payload_key, payload = next(iter(d.items()))
+            return {"type": type_by_key.get(payload_key),
+                    "payload_key": payload_key, "payload": payload}
         if self.encoding_method == "asn1":
             env = self.spectrum_encoder.decode(msg_type, data)
             payload_key, payload = env[payload_field]
@@ -907,7 +957,7 @@ class SpectrumSharingDApp(DApp):
             payload_key, payload = next(iter(env[payload_field].items()))
             inner_type = inner_type_map.get(payload_key)
             if inner_type is not None:
-                payload = JsonE3Encoder.prepare_data_from_json_decode(
+                payload = sm_helpers.prepare_data_from_json_decode(
                     inner_type, payload, self._SPECTRUM_JSON_BINARY_FIELDS
                 )
             return {"type": env.get(type_field, type_by_key.get(payload_key)),
@@ -944,10 +994,15 @@ class SpectrumSharingDApp(DApp):
 
     def _encode_spectrum_message(self, message_type: str, data: dict) -> bytes:
         """Encode a spectrum message using the configured encoding method."""
+        if self.encoding_method == "protobuf":
+            from google.protobuf import json_format
+            msg = self._spectrum_pb_new(message_type)
+            json_format.ParseDict(data, msg)
+            return msg.SerializeToString()
         if self.encoding_method == "asn1":
             return self.spectrum_encoder.encode(message_type, data)
         if self.encoding_method == "json":
-            json_data = JsonE3Encoder.prepare_data_for_json_encode(
+            json_data = sm_helpers.prepare_data_for_json_encode(
                 message_type, data.copy(), self._SPECTRUM_JSON_BINARY_FIELDS
             )
             self._validate_spectrum_message(message_type, json_data)
@@ -1063,12 +1118,19 @@ class SpectrumSharingDApp(DApp):
 
     def _decode_spectrum_message(self, message_type: str, data: bytes) -> dict:
         """Decode a spectrum message using the configured encoding method."""
+        if self.encoding_method == "protobuf":
+            # pb_message_to_dict yields native types with the pinned json_name
+            # keys (e.g. shmWriteIdx/nRanges for Spectrum-SensingIndication),
+            # matching the ASN.1 decode shape the handlers consume.
+            msg = self._spectrum_pb_new(message_type)
+            msg.ParseFromString(bytes(data))
+            return sm_helpers.pb_message_to_dict(msg)
         if self.encoding_method == "asn1":
             return self.spectrum_encoder.decode(message_type, data)
         if self.encoding_method == "json":
             decoded_data = json.loads(data.decode("utf-8"))
             self._validate_spectrum_message(message_type, decoded_data)
-            return JsonE3Encoder.prepare_data_from_json_decode(
+            return sm_helpers.prepare_data_from_json_decode(
                 message_type, decoded_data, self._SPECTRUM_JSON_BINARY_FIELDS
             )
         raise ValueError(f"Unsupported encoding method: {self.encoding_method}")
@@ -1410,7 +1472,7 @@ class SpectrumSharingDApp(DApp):
             return
 
         if ran_function_id == self.RAN_FUNCTION_ID:
-            p = SlotPointer.from_bytes(data)
+            p = SlotPointer.from_bytes(data, encoding=self.encoding_method)
             if p is not None:
                 self._handle_l1_indication(p, t)
                 return
@@ -1436,7 +1498,7 @@ class SpectrumSharingDApp(DApp):
             return False
         try:
             sfn, slot = int(msg["sfn"]), int(msg["slot"])
-            if self.encoding_method == "asn1":
+            if self.encoding_method in ("asn1", "protobuf"):
                 write_idx, n = int(msg["shmWriteIdx"]), int(msg["nRanges"])
             else:
                 shm = msg["sensing_shm"]

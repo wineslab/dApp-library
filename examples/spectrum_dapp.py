@@ -8,7 +8,7 @@ import threading
 import time
 import logging
 
-from e3interface.e3_connector import E3LinkLayer, E3TransportLayer
+from e3interface.e3_transport import E3LinkLayer, E3TransportLayer
 from spectrum.spectrum_dapp import (
     SpectrumSharingDApp,
     compute_fft_size,
@@ -251,7 +251,7 @@ if __name__ == "__main__":
                              "1/beta). Default 1/2048 matches the gNB code default; "
                              "the X410 sample conf overrides it to 0.0078125 (1/128).")
     parser.add_argument('--encoding-method', type=str, default='asn1',
-                        choices=['asn1', 'json'],
+                        choices=['asn1', 'json', 'protobuf'],
                         help="Wire encoding for Spectrum-* envelopes (default: asn1).")
     parser.add_argument('--no-sensing-only', dest='sensing_only',
                         action='store_false', default=True,

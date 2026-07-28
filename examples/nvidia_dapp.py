@@ -6,7 +6,7 @@ Example script to showcase the Nvidia dApp
 import argparse
 import time
 
-from e3interface.e3_connector import E3LinkLayer, E3TransportLayer
+from e3interface.e3_transport import E3LinkLayer, E3TransportLayer
 from nvidia.nvidia_dapp import NvidiaDApp
 
 

@@ -178,16 +178,55 @@ class SlotPointer:
             return None
 
     @classmethod
-    def from_bytes(cls, data: bytes) -> Optional["SlotPointer"]:
-        """Auto-detect JSON vs APER and dispatch to the matching parser.
+    def from_protobuf_bytes(cls, data: bytes) -> Optional["SlotPointer"]:
+        """Parse an L1-KPM indication payload as protobuf.
 
-        Discriminator is the first byte: JSON payloads start with ``{``
-        (0x7B), APER payloads start with the SEQUENCE's OPTIONAL preamble
-        (four OPTIONALs in L1KPM-Indication). 0x7B is not a valid APER
-        preamble byte here, so a one-byte sniff is sufficient.
+        Schema: L1KPMIndication from defs/e3sm_oai_l1_kpm.proto — kept in
+        lockstep with the OAI protobuf-c encoder. Returns None if the buffer
+        doesn't parse or the required iq_samples_ref sub-message is absent.
+        """
+        try:
+            from .defs import e3sm_oai_l1_kpm_pb2 as _l1_pb2
+            msg = _l1_pb2.L1KPMIndication()
+            msg.ParseFromString(bytes(data))
+        except Exception:
+            return None
+        if not msg.HasField("iq_samples_ref"):
+            return None
+        iq = msg.iq_samples_ref
+        try:
+            return cls(
+                fh_buffer_index=int(iq.fh_buffer_index),
+                fh_write_index=int(iq.fh_write_index),
+                sfn=int(msg.sfn),
+                slot=int(msg.slot),
+                cell_id=int(msg.cell_id),
+                n_rx_ant=int(msg.n_rx_ant) if msg.HasField("n_rx_ant") else N_ANTS,
+                timestamp_ns=int(msg.timestamp),
+                valid_symbol_mask=int(msg.valid_symbol_mask)
+                if msg.HasField("valid_symbol_mask") else 0x3FFF,
+            )
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def from_bytes(cls, data: bytes, encoding: str = None) -> Optional["SlotPointer"]:
+        """Dispatch to the matching parser for ``encoding``.
+
+        When ``encoding`` is given ("asn1"/"json"/"protobuf") it selects the
+        parser directly (protobuf shares no byte-sniff discriminator with APER).
+        When omitted, falls back to auto-detecting JSON vs APER by the first
+        byte: JSON payloads start with ``{`` (0x7B), which is not a valid APER
+        preamble byte for L1KPM-Indication, so a one-byte sniff is sufficient.
         """
         if not data:
             return None
+        if encoding == "protobuf":
+            return cls.from_protobuf_bytes(data)
+        if encoding == "json":
+            return cls.from_json_bytes(data)
+        if encoding == "asn1":
+            return cls.from_asn1_bytes(data)
         if data[0] == 0x7B:  # '{'
             return cls.from_json_bytes(data)
         return cls.from_asn1_bytes(data)

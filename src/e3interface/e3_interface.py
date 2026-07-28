@@ -1,13 +1,39 @@
 import queue
-import random
 import threading
 import time
-import zmq
-from .e3_connector import E3Connector
+
 from .e3_logging import e3_logger
-from .e3_encoder import E3Encoder
+from .libe3_agent import (
+    Libe3Agent,
+    SUCCESS,
+    EVENT_INDICATION,
+    EVENT_XAPP_CONTROL,
+    EVENT_SUBSCRIPTION_RESPONSE,
+    EVENT_SETUP_RESPONSE,
+    EVENT_MESSAGE_ACK,
+)
+
+# Inbound drain tuning. poll_events blocks up to POLL_TIMEOUT_MS for the first
+# event (so stop_event is checked regularly) then sweeps up to POLL_MAX_BATCH
+# already-queued events in one call — amortising the GIL acquire + Python<->C++
+# crossing across the batch, which is what sustains the sub-ms/high-throughput
+# E3AP rate. See libe3 swig/e3_dapp_session.hpp.
+POLL_MAX_BATCH = 256
+POLL_TIMEOUT_MS = 100
+SETUP_WAIT_MS = 6000
+
 
 class E3Interface:
+    """Singleton E3AP interface, backed by the libe3 dApp session (``libe3py``).
+
+    All E3AP operations (transport, setup handshake, subscribe, indication/
+    control framing, wire encoding) are handled by libe3. This class keeps the
+    dApp-facing orchestration: the setup call, the outbound schedule queue, the
+    batched inbound drain, and the callback dispatch model (unchanged, preserving
+    the concurrency fixes for issues #56/#57/#83). Service-model payloads are
+    opaque ``bytes`` here and are encoded/decoded in the dApp subclasses.
+    """
+
     _instance = None
     _lock = threading.Lock()
 
@@ -17,13 +43,15 @@ class E3Interface:
                 cls._instance = super(E3Interface, cls).__new__(cls)
         return cls._instance
 
-    def __init__(self, encoder: E3Encoder, *args, **kwargs):
-        """
-        Initialize E3Interface with a specific encoder.
-        
+    def __init__(self, *args, link: str = "zmq", transport: str = "ipc",
+                 encoding: str = "asn1", **kwargs):
+        """Initialise the interface.
+
         Args:
-            encoder: The E3Encoder instance to use for message encoding/decoding
-            **kwargs: Additional configuration parameters (link, transport, etc.)
+            link: link layer ("zmq" or "posix").
+            transport: transport layer ("ipc", "tcp", "sctp").
+            encoding: E3AP wire encoding ("asn1", "json", "protobuf"); must match
+                the gNB E3Configuration.
         """
         if not hasattr(self, "initialized"):
             self.indication_callbacks = {}   # key: (dAppId, subscriptionId) -> list(callbacks)
@@ -35,95 +63,112 @@ class E3Interface:
             self.stop_event = threading.Event()
             # Subscription-response correlation. The wire is fire-and-forget, so a
             # queued request is NOT an accepted one — a queue put() succeeding
-            # says nothing about the gNB. Map each request's msgId to its
-            # ranFunctionId and record the gNB's SubscriptionResponse verdict so
-            # callers can block until the RAN actually accepts/rejects.
+            # says nothing about the gNB. libe3 now returns the assigned request
+            # id from subscribe() (a positive int) and the RAN echoes it in the
+            # SubscriptionResponse, so we map response -> RF by request id
+            # (recorded when the outbound thread actually sends). This is robust
+            # to a dropped/reordered response, unlike the former FIFO pairing
+            # which desynced permanently on the first drop. Callers block on the
+            # recorded verdict until the RAN accepts/rejects (or the wait times
+            # out, which drops the pending entry so it can't desync later).
             self._sub_cv = threading.Condition()
-            self._sub_pending = {}   # requestId (msgId) -> ranFunctionId
-            self._sub_results = {}   # ranFunctionId -> bool (positive?)
+            self._sub_reqid_to_rf = {}   # request_id -> ranFunctionId (in flight)
+            self._sub_pending_rfs = set()  # RFs queued and awaiting a verdict
+            self._sub_results = {}       # ranFunctionId -> bool (positive?)
+
+            self._link = link
+            self._transport = transport
+            self._encoding = encoding
+            # The libe3 agent is created lazily in send_setup_request(), once the
+            # dApp identity (name/version/vendor) is known — libe3 needs it in the
+            # E3Config before start().
+            self.agent: Libe3Agent | None = None
+
+            self.outbound_queue = queue.Queue()
+            e3_logger.info(
+                "E3Interface configured (link=%s transport=%s encoding=%s)",
+                link, transport, encoding,
+            )
+            # Set LAST: __init__ runs unlocked (only __new__ holds _lock), and
+            # the re-init guard keys on `initialized`. Assigning it only after
+            # agent/outbound_queue/_link etc. are in place prevents a second
+            # thread from seeing a truthy `initialized` and using a
+            # partially-constructed singleton.
             self.initialized = True
 
-            # Message ID management
-            self._message_id_lock = threading.Lock()
+    def send_setup_request(self, e3apProtocolVersion: str = "0.0.0", dAppName: str = "",
+                           dAppVersion: str = "0.0.0", vendor: str = "") -> tuple[bool, dict | None]:
+        """Create the libe3 agent, start it, and complete the setup handshake.
 
-            # Create an E3Connector instance based on the configuration
-            self.e3_connector = E3Connector.setup_connector(kwargs.get('link', ''), kwargs.get('transport', '')) 
-
-            e3_logger.info(f"Endpoint setup {self.e3_connector.setup_endpoint}")
-            e3_logger.info(f"Endpoint inbound {self.e3_connector.inbound_endpoint}")
-            e3_logger.info(f"Endpoint outbound {self.e3_connector.outbound_endpoint}")
-
-            # Use the provided encoder directly
-            self.encoder = encoder
-            self.outbound_queue = queue.Queue()
-
-    def send_setup_request(self, e3apProtocolVersion: str = "0.0.0", dAppName: str = "", dAppVersion: str = "0.0.0", vendor: str = "") -> tuple[bool, list | None]:
-        """Send a setup request to the E3 interface
-        
-        Args:
-            e3apProtocolVersion: E3AP protocol version string (e.g., "0.0.0")
-            dAppName: Name of the dApp
-            dAppVersion: Version of the dApp (e.g., "0.0.0")
-            vendor: Vendor name (max 30 chars)
+        Returns (positive, setupResponseDict). The dict shape matches what the
+        dApp base class and examples consume (dAppIdentifier, responseCode,
+        ranFunctionList[{ranFunctionIdentifier, telemetryIdentifierList,
+        controlIdentifierList, ranFunctionData}]).
         """
-        e3_logger.info(f"Send setup request for dApp '{dAppName}' version {dAppVersion} (vendor={vendor}, e3ap_version={e3apProtocolVersion})")
-        msg_id = self._get_next_message_id()
-        payload = self.encoder.create_setup_request(msgId=msg_id, e3apProtocolVersion=e3apProtocolVersion, dAppName=dAppName, dAppVersion=dAppVersion, vendor=vendor)
+        e3_logger.info(
+            "Send setup request for dApp '%s' version %s (vendor=%s, e3ap_version=%s)",
+            dAppName, dAppVersion, vendor, e3apProtocolVersion,
+        )
         try:
-            response = self.e3_connector.send_setup_request(payload)       
-        except ConnectionRefusedError as e:
-            e3_logger.exception(f"Unable to connect to E3 setup endpoint, connection refused")
+            self.agent = Libe3Agent(
+                link=self._link,
+                transport=self._transport,
+                encoding=self._encoding,
+                dapp_name=dAppName,
+                dapp_version=dAppVersion,
+                vendor=vendor,
+                e3ap_version=e3apProtocolVersion,
+            )
+            rc = self.agent.start()
+            if rc != SUCCESS:
+                e3_logger.error("libe3 agent failed to start (ErrorCode=%s)", rc)
+                return False, None
+
+            rc = self.agent.wait_for_setup(SETUP_WAIT_MS)
+            if rc != SUCCESS:
+                e3_logger.error("E3 setup handshake failed (ErrorCode=%s)", rc)
+                return False, None
+        except ImportError as exc:
+            # Deterministic (libe3py not installed): re-raise with the install
+            # hint so the caller's retry loop does not spin 3x on it and the
+            # real cause isn't buried under a generic "setup failed" message.
+            e3_logger.error("Cannot start the E3 agent: %s", exc)
+            raise
+        except Exception:
+            e3_logger.exception("Unable to establish the E3 setup with the RAN")
             return False, None
 
-        e3_logger.info("Setup response received")
-        pdu = self.encoder.decode_pdu(response)
-        pdu_type, pdu_data, _msg_id = pdu
-        
-        if pdu_type == "setupResponse":
-            e3_setup_response = pdu_data
-            e3_logger.info(e3_setup_response)
-            if e3_setup_response['requestId'] != msg_id:
-                raise ValueError("Request id is different from the one sent!")
-            outcome = e3_setup_response['responseCode'] == 'positive'
-            return outcome, e3_setup_response
-        else:
-            e3_logger.error(f"Unexpected PDU type in the setup request {pdu_type}")
-            return False, None
+        response = self.agent.setup_response_dict()
+        e3_logger.info("Setup response received: %s", response)
+        return self.agent.setup_positive(), response
 
-    def send_subscription_request(self, dappId: int, ranFunctionId: int, telemetryIds: list[int], controlIds: list[int],
-                                  subscriptionTime: int | None = None, periodicity: int | None = None) -> bool:
-        """Send a subscription request to the E3 interface"""
-        e3_logger.info(f"Start subscription request for RAN function {ranFunctionId}")
-        msg_id = self._get_next_message_id()
-        proto_pdu = {
-                'msgId': msg_id,
-                'dappId': dappId,
-                'ranFunctionId': ranFunctionId,
-                'telemetryIdentifierList': telemetryIds,
-                'controlIdentifierList': controlIds
-            }
-    
-        # isinstance ensures that if fields are 0 they are still included
-        if isinstance(subscriptionTime, int):
-            proto_pdu['subscriptionTime'] = subscriptionTime
+    def send_subscription_request(self, dappId: int, ranFunctionId: int, telemetryIds: list[int],
+                                  controlIds: list[int], subscriptionTime: int | None = None,
+                                  periodicity: int | None = None) -> bool:
+        """Queue a subscription request (sent by the outbound thread via libe3).
 
-        if isinstance(periodicity, int):
-            proto_pdu['periodicity'] = periodicity
-
-        # Register the pending request so the gNB's SubscriptionResponse (which
-        # carries requestId == this msgId) can be correlated back to its RF.
+        The queue put() succeeding says nothing about the gNB, so we mark the RF
+        as pending here; the outbound thread records the request-id->RF mapping
+        once libe3 assigns it, and wait_for_subscription_result blocks on the
+        verdict _handle_subscription_response records for that RF.
+        """
+        e3_logger.info("Queue subscription request for RAN function %s", ranFunctionId)
         with self._sub_cv:
-            self._sub_pending[msg_id] = ranFunctionId
+            self._sub_pending_rfs.add(ranFunctionId)
             self._sub_results.pop(ranFunctionId, None)
         try:
-            # Pass raw data and message ID to outbound queue for encoding
-            self.outbound_queue.put(('subscription', proto_pdu))
-            e3_logger.info("Subscription request queued")
+            self.outbound_queue.put(('subscription', {
+                'ranFunctionId': ranFunctionId,
+                'telemetryIds': telemetryIds,
+                'controlIds': controlIds,
+                'subscriptionTime': subscriptionTime,
+                'periodicity': periodicity,
+            }))
             return True
         except Exception as e:
             with self._sub_cv:
-                self._sub_pending.pop(msg_id, None)
-            e3_logger.error(f"Failed to send subscription request: {e}")
+                self._sub_pending_rfs.discard(ranFunctionId)
+            e3_logger.error("Failed to queue subscription request: %s", e)
             return False
 
     def wait_for_subscription_result(self, ran_function_id: int, timeout: float = 5.0):
@@ -136,142 +181,94 @@ class E3Interface:
             while ran_function_id not in self._sub_results:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
+                    # Timed out: stop tracking this RF and drop any request-id
+                    # mapping pointing at it, so a late/duplicate response can't
+                    # resurrect a stale verdict or desync later correlations.
+                    self._sub_pending_rfs.discard(ran_function_id)
+                    for rid in [r for r, rf in self._sub_reqid_to_rf.items()
+                                if rf == ran_function_id]:
+                        del self._sub_reqid_to_rf[rid]
                     return None
                 self._sub_cv.wait(remaining)
             return self._sub_results[ran_function_id]
 
     def send_message_ack(self, requestId: int, responseCode: str = "positive"):
-        """Send a message acknowledgment"""
-        msg_id = self._get_next_message_id()
-
-        # Pass raw data and message ID to outbound queue for encoding
+        """Queue a message acknowledgment."""
         self.outbound_queue.put(('ack', {
-            'msgId': msg_id,
             'requestId': requestId,
-            'responseCode': responseCode
+            'positive': responseCode == "positive",
         }))
-        e3_logger.debug(f"Message ACK queued for request {requestId}")
+        e3_logger.debug("Message ACK queued for request %s", requestId)
         return True
-    
-    def send_release_message(self, dappId: int):
-        """Send a release message to end interactions with RAN"""
-        msg_id = self._get_next_message_id()
 
-        # Pass raw data and message ID to outbound queue for encoding
-        self.outbound_queue.put(('release', {
-            'msgId': msg_id,
-            'dappId': dappId
-        }))
-        e3_logger.debug(f"Release Message queued for dApp {dappId}")
+    def send_release_message(self, dappId: int):
+        """Queue a release message to end interactions with the RAN."""
+        self.outbound_queue.put(('release', {}))
+        e3_logger.debug("Release message queued for dApp %s", dappId)
         return True
 
     def setup_connections(self):
-        # Two connections: use threads so callbacks remain local callables
+        # Two worker threads: inbound drains libe3's event queue, outbound sends
+        # scheduled controls/reports/etc through libe3.
         self.inbound_thread = threading.Thread(target=self._inbound_connection)
         self.outbound_thread = threading.Thread(target=self._outbound_connection)
         self.inbound_thread.start()
         self.outbound_thread.start()
 
     def _inbound_connection(self):
-        """
-        Inbound is for all the messages that are coming from the RAN after the initial setup 
-        """
-        e3_logger.info(f'Start inbound connection')
-        self.e3_connector.setup_inbound_connection()
-        e3_logger.info(f'Start inbound loop')
-
+        """Batched drain of libe3 inbound events into the callback dispatchers."""
+        e3_logger.info("Start inbound loop")
+        last_dropped = 0
         try:
             while not self.stop_event.is_set():
-                data = self.e3_connector.receive()
-                if not data:
-                    # Transport-level loss (gNB restart, socket closed, etc.).
-                    # Make this loud + set stop_event so the main thread exits
-                    # cleanly; a process supervisor (systemd, k8s restart
-                    # policy) can then bring the dApp back up against the
-                    # restarted gNB. Without this, the dApp would silently
-                    # go deaf — no indications, no log, no recovery.
-                    e3_logger.critical(
-                        'Transport-level connection lost (receive returned no data); '
-                        'setting stop_event so the dApp exits cleanly'
-                    )
-                    self.stop_event.set()
-                    break
-                e3_logger.debug(f'Received data size: {len(data)}')
-                # Per-PDU resilience: any decode/dispatch failure must NOT
-                # kill the inbound loop. The original behaviour caught the
-                # exception at the outer try/except (line 195) and set
-                # stop_event for the whole dApp, so one malformed PDU
-                # (older gNB with a different schema variant, a transient
-                # encoder bug, etc.) would tear the process down. Log
-                # loudly and continue.
-                try:
-                    pdu = self.encoder.decode_pdu(data)
-                    pdu_type, pdu_data, msg_id = pdu
-                    e3_logger.debug(f"Data decoded")
-                    match pdu_type:
-                        case "subscriptionResponse":
-                            e3_subscription_response = pdu_data
-                            e3_logger.info(
-                                f"Received subscription response: {e3_subscription_response}"
-                            )
-                            self._handle_subscription_response(e3_subscription_response)
+                batch = self.agent.poll_events(POLL_MAX_BATCH, POLL_TIMEOUT_MS)
+                for ev in batch:
+                    # Per-event resilience: one malformed/unknown event must not
+                    # tear down the loop (mirrors the pre-libe3 per-PDU isolation).
+                    try:
+                        kind = ev.kind
+                        if kind == EVENT_INDICATION:
+                            self._handle_indication_data(
+                                ev.dapp_id, ev.ran_function_id, ev.get_payload())
+                        elif kind == EVENT_XAPP_CONTROL:
+                            self._handle_xapp_control_data(
+                                ev.dapp_id, ev.ran_function_id, ev.get_payload())
+                        elif kind == EVENT_SUBSCRIPTION_RESPONSE:
+                            self._handle_subscription_response({
+                                'dAppIdentifier': ev.dapp_id,
+                                'responseCode': 'positive' if ev.response_code == 0 else 'negative',
+                                'subscriptionId': ev.subscription_id,
+                                'requestId': ev.request_id,
+                            })
+                        elif kind == EVENT_MESSAGE_ACK:
+                            e3_logger.debug(
+                                "Received message ACK: request=%s rc=%s",
+                                ev.request_id, ev.response_code)
+                        elif kind == EVENT_SETUP_RESPONSE:
+                            # Consumed synchronously in send_setup_request(); ignore.
+                            pass
+                        else:
+                            e3_logger.warning("Unrecognized event kind %r — dropping", kind)
+                    except Exception:
+                        e3_logger.exception(
+                            "Inbound event dispatch failed (kind=%r); dropping and continuing",
+                            getattr(ev, "kind", None))
+                        continue
 
-                        case "indicationMessage":
-                            e3_indication_message = pdu_data
-                            dapp_identifier = e3_indication_message['dAppIdentifier']
-                            ran_function_id = e3_indication_message['ranFunctionIdentifier']
-                            protocolData = e3_indication_message['protocolData']
-                            e3_logger.debug(f"Indication message for dApp {dapp_identifier}, RF={ran_function_id}, protocolData {len(protocolData)} bytes")
-                            self._handle_indication_data(dapp_identifier, ran_function_id, protocolData)
-
-                        case "messageAck":
-                            e3_message_ack = pdu_data
-                            e3_logger.debug(f"Received message ACK: {e3_message_ack}")
-                            # Just log the ACK, no correlation needed atm
-                            continue
-
-                        case "xAppControlAction":
-                            e3_xapp_control_action = pdu_data
-                            dapp_identifier = e3_xapp_control_action['dAppIdentifier']
-                            self._handle_xapp_control_data(dapp_identifier, e3_xapp_control_action)
-
-                        case _:
-                            e3_logger.warning(
-                                "Unrecognized PDU type %r — dropping and continuing",
-                                pdu_type,
-                            )
-                except Exception:
-                    e3_logger.exception(
-                        "PDU decode/dispatch failed (data_size=%d); "
-                        "dropping this message and continuing",
-                        len(data) if data else 0,
-                    )
-                    continue
-        except KeyboardInterrupt:
-            e3_logger.debug("Inbound thread received SIGINT, stopping")
-            self.stop_event.set()
-        except zmq.error.ContextTerminated:
-            e3_logger.debug("Inbound connection context terminated, exiting")
-            self.stop_event.set()
+                dropped = self.agent.dropped_events()
+                if dropped != last_dropped:
+                    e3_logger.warning(
+                        "libe3 inbound ring dropped %d event(s) total (backpressure)", dropped)
+                    last_dropped = dropped
         except Exception:
-            # Reaches here only on TRANSPORT-level errors that escape the
-            # per-PDU handler above (e.g. the connector's receive() raises).
-            # In that case we have lost the channel — same recovery story
-            # as the "no data" branch.
-            e3_logger.exception(f"Transport error in inbound thread")
+            e3_logger.exception("Fatal error in inbound thread")
             self.stop_event.set()
         finally:
             e3_logger.info("Close inbound connection")
 
     def _outbound_connection(self):
-        """
-        Outbound is for all the messages that should go to the RAN after the initial setup 
-        Messages are dApp Control Action and dApp Report Message
-        """
-        e3_logger.info(f'Start outbound connection')
-        self.e3_connector.setup_outbound_connection()
-
-        e3_logger.info(f'Start outbound loop')
+        """Drain the outbound queue and forward each message through libe3."""
+        e3_logger.info("Start outbound loop")
         try:
             while not self.stop_event.is_set():
                 try:
@@ -279,58 +276,82 @@ class E3Interface:
                 except queue.Empty:
                     continue
 
-                e3_logger.debug(f"Outbound queue has got '{msg}', {data}")
+                # Per-message resilience: a single bad send (e.g. a control with
+                # non-bytes actionData that raises in libe3) must not set
+                # stop_event and tear down both the outbound AND inbound planes.
+                # Mirror the inbound loop's per-event isolation.
+                try:
+                    e3_logger.debug("Outbound queue has got '%s', %s", msg, data)
+                    rc = SUCCESS
+                    match msg:
+                        case "control":
+                            rc = self.agent.send_control(
+                                data["ranFunctionId"], data["controlId"], data["actionData"])
+                        case "subscription":
+                            self._send_subscription(data)
+                        case "ack":
+                            rc = self.agent.send_message_ack(data["requestId"], data["positive"])
+                        case "report":
+                            rc = self.agent.send_report(data["ranFunctionId"], data["reportData"])
+                        case "release":
+                            rc = self.agent.release()
+                        case _:
+                            e3_logger.error("Unrecognized outbound message: %r; dropping", msg)
+                            continue
 
-                match msg:
-                    case "control":
-                        payload = self.encoder.create_control_action(
-                            data["msgId"],
-                            data["dappId"],
-                            data["ranFunctionId"],
-                            data["controlId"],
-                            data["actionData"],
-                        )
-                    case "subscription":
-                        payload = self.encoder.create_subscription_request(
-                            data['msgId'], data['dappId'], data['ranFunctionId'],
-                            data['telemetryIdentifierList'],
-                            data['controlIdentifierList'],
-                            data.get('subscriptionTime'),
-                            data.get('periodicity'))
-                    case "ack":
-                        payload = self.encoder.create_message_ack(data['msgId'], data['requestId'], data['responseCode'])
-                    case "report":
-                        payload = self.encoder.create_dapp_report(data['msgId'], data['dappId'], data['ranFunctionId'], data['reportData'])
-                    case "release":
-                        payload = self.encoder.create_release_message(data['msgId'], data['dappId'])
-                    case _:
-                        raise ValueError("Unrecognized value ", msg)
-
-                e3_logger.debug(f"Send the pdu encoded {payload}")
-                self.e3_connector.send(payload)
-        except KeyboardInterrupt:
-            e3_logger.debug("Outbound thread received SIGINT, stopping")
-            self.stop_event.set()
-        except zmq.error.ContextTerminated:
-            e3_logger.debug("Outbound connection context terminated, exiting")
-            self.stop_event.set()
+                    if rc != SUCCESS:
+                        e3_logger.error("libe3 %s send failed (ErrorCode=%s)", msg, rc)
+                except Exception:
+                    e3_logger.exception(
+                        "Outbound message %r failed; dropping and continuing", msg)
+                    continue
         except Exception:
-            e3_logger.exception(f"Error in outbound thread")
+            e3_logger.exception("Fatal error in outbound thread")
             self.stop_event.set()
         finally:
             e3_logger.info("Close outbound connection")
 
+    def _send_subscription(self, data):
+        """Send a subscribe via libe3 and record the request-id -> RF mapping.
+
+        libe3's subscribe() returns the assigned request id (a positive int) on
+        success, or a negative ErrorCode on failure. We hold ``_sub_cv`` across
+        the send + mapping-record so the mapping is in place before the inbound
+        thread can process the (later, post-round-trip) SubscriptionResponse.
+        """
+        rf = data["ranFunctionId"]
+        with self._sub_cv:
+            ret = self.agent.subscribe(
+                rf, data["telemetryIds"], data["controlIds"],
+                data.get("subscriptionTime"), data.get("periodicity"))
+            if ret > 0:
+                self._sub_reqid_to_rf[ret] = rf
+            else:
+                # Send failed: record a negative verdict so a waiter doesn't
+                # block for the full timeout, and stop tracking the RF.
+                self._sub_pending_rfs.discard(rf)
+                self._sub_results[rf] = False
+                self._sub_cv.notify_all()
+                e3_logger.error("libe3 subscribe send failed for RF %s (ErrorCode=%s)", rf, ret)
+
     def _handle_subscription_response(self, data):
         dapp_id = data['dAppIdentifier']
-        # Correlate to the pending request by requestId and record the verdict so
-        # wait_for_subscription_result() can unblock the caller.
+        # Correlate by request id: the RAN echoes the request's id in the
+        # response, and the outbound thread recorded request_id -> RF when it
+        # sent the subscribe. Robust to a dropped/reordered response (the former
+        # FIFO pairing blamed the wrong RF and stayed off-by-one on a drop).
         request_id = data.get('requestId')
         positive = data.get('responseCode') == 'positive'
         with self._sub_cv:
-            rfid = self._sub_pending.pop(request_id, None)
+            rfid = self._sub_reqid_to_rf.pop(request_id, None)
             if rfid is not None:
+                self._sub_pending_rfs.discard(rfid)
                 self._sub_results[rfid] = positive
                 self._sub_cv.notify_all()
+            else:
+                e3_logger.warning(
+                    "SubscriptionResponse for unknown/stale requestId=%s; ignoring",
+                    request_id)
         with self._callback_lock:
             e3_logger.debug(f"DApp ID requested {dapp_id}, map status {self.subscription_callbacks}")
             callbacks = list(self.subscription_callbacks.get(dapp_id, []))
@@ -369,17 +390,11 @@ class E3Interface:
         else:
             e3_logger.warning(f"No indication callback registered for dApp {dapp_identifier}")
 
-    def _handle_xapp_control_data(self, dapp_identifier, data):
-        ran_function_id = data["ranFunctionIdentifier"]
-        xapp_control_data = data["xAppControlData"]
-
+    def _handle_xapp_control_data(self, dapp_identifier, ran_function_id, xapp_control_data):
         e3_logger.debug(
-            f"Received xAppControlAction: "
-            f"dApp={dapp_identifier}, ranFunc={ran_function_id}, "
-            f"payload={len(xapp_control_data)} bytes, "
-            f"xAppControlAction payload (hex): {xapp_control_data.hex()}"
+            "Received xAppControlAction: dApp=%s, ranFunc=%s, payload=%d bytes",
+            dapp_identifier, ran_function_id, len(xapp_control_data),
         )
-
         with self._callback_lock:
             callbacks = list(self.xapp_control_callbacks.get(dapp_identifier, []))
         if callbacks:
@@ -390,22 +405,16 @@ class E3Interface:
             e3_logger.warning(f"No xApp control callback registered for dApp {dapp_identifier}")
 
     def schedule_control(self, dappId: int, ranFunctionId: int, controlId: int, actionData: bytes = b""):
-        msg_id = self._get_next_message_id()
         self.outbound_queue.put(('control', {
-            'msgId': msg_id,
-            'dappId': dappId,
             'ranFunctionId': ranFunctionId,
             'controlId': controlId,
-            'actionData': actionData
+            'actionData': actionData,
         }))
 
     def schedule_report(self, dappId: int, ranFunctionId: int, reportData: bytes):
-        msg_id = self._get_next_message_id()
         self.outbound_queue.put(('report', {
-            'msgId': msg_id,
-            'dappId': dappId,
             'ranFunctionId': ranFunctionId,
-            'reportData': reportData
+            'reportData': reportData,
         }))
 
     def add_subscription_callback(self, dapp_id: int, callback):
@@ -421,7 +430,6 @@ class E3Interface:
                     self.subscription_callbacks[dapp_id] = callbacks
                 else:
                     e3_logger.warning(f"Subscription callback already registered for dApp {dapp_id}, skipping")
-
 
     def remove_subscription_callback(self, dapp_id: int, callback=None):
         with self._callback_lock:
@@ -513,7 +521,7 @@ class E3Interface:
                 else:
                     e3_logger.warning(f"xApp control callback already registered for dApp {dapp_id}, skipping")
 
-    def remove_xapp_control_callback(self, dapp_id: int, subscription_id: int | None = None,  callback=None):
+    def remove_xapp_control_callback(self, dapp_id: int, subscription_id: int | None = None, callback=None):
         with self._callback_lock:
             if dapp_id in self.xapp_control_callbacks:
                 if callback is None:
@@ -533,21 +541,16 @@ class E3Interface:
             else:
                 e3_logger.warning(f"No xApp control callbacks found for dApp {dapp_id}")
 
-
-    def _get_next_message_id(self):
-        """Generate next message ID in thread-safe manner (1..1000)"""
-        with self._message_id_lock:
-            return random.randint(1, 1000)
-
     def terminate_connections(self):
         e3_logger.info("Stop event")
         self.stop_event.set()
 
-        # Dispose connector early to unblock any blocking recv/send calls
-        try:
-            self.e3_connector.dispose()
-        except Exception:
-            e3_logger.debug("Error disposing connector during shutdown")
+        # Release + stop the libe3 agent early to unblock any blocked poll_events.
+        if self.agent is not None:
+            try:
+                self.agent.stop()
+            except Exception:
+                e3_logger.debug("Error stopping libe3 agent during shutdown")
 
         if hasattr(self, "inbound_thread") and self.inbound_thread.is_alive():
             self.inbound_thread.join(timeout=2)

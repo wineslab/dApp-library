@@ -10,7 +10,6 @@ from abc import ABC, abstractmethod
 import threading
 import time
 from e3interface.e3_interface import E3Interface
-from e3interface.e3_encoder import AsnE3Encoder, JsonE3Encoder
 from e3interface.e3_logging import dapp_logger
 
 class DApp(ABC):
@@ -30,16 +29,14 @@ class DApp(ABC):
         self.dapp_version = dapp_version
         self.vendor = vendor
         self.e3ap_protocol_version = e3ap_protocol_version
-        self.encoding_method = encoding_method        
-        match self.encoding_method:
-            case "asn1":
-                encoder = AsnE3Encoder()
-            case "json":
-                encoder = JsonE3Encoder()
-            case _:
-                raise ValueError(f"Unsupported encoding method: {self.encoding_method}")
+        self.encoding_method = encoding_method
+        if encoding_method not in ("asn1", "json", "protobuf"):
+            raise ValueError(f"Unsupported encoding method: {encoding_method}")
 
-        self.e3_interface = E3Interface(encoder=encoder, link=link, transport=transport)
+        # libe3 owns E3AP (transport + wire encoding); the encoding string is
+        # passed straight through and must match the gNB E3Configuration.
+        self.e3_interface = E3Interface(
+            link=link, transport=transport, encoding=encoding_method)
         self.stop_event = threading.Event()
 
         dapp_logger.info(f'Using {link} and {transport}')

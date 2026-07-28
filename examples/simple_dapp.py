@@ -13,7 +13,7 @@ import argparse
 import threading
 import time
 
-from e3interface.e3_connector import E3LinkLayer, E3TransportLayer
+from e3interface.e3_transport import E3LinkLayer, E3TransportLayer
 from simple.simple_dapp import SimpleDApp
 
 
@@ -101,7 +101,7 @@ if __name__ == "__main__":
         "--encoding",
         type=str,
         default="asn1",
-        choices=["asn1", "json"],
+        choices=["asn1", "json", "protobuf"],
         help="Encoding format (default: asn1)",
     )
     parser.add_argument(

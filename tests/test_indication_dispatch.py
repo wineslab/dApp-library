@@ -26,6 +26,7 @@ def _bare_dapp():
     """A SpectrumSharingDApp with only the fields the tested methods touch."""
     d = object.__new__(SpectrumSharingDApp)
     d.dapp_id = 7
+    d.encoding_method = "asn1"
     return d
 
 
@@ -47,7 +48,7 @@ def test_dispatch_routes_by_ran_function_id(monkeypatch):
     # decode that used to mis-route RF=1 payloads into the IQ path.
     class _AlwaysPointer:
         @staticmethod
-        def from_bytes(data):
+        def from_bytes(data, encoding=None):
             return object()
     monkeypatch.setattr(sd, "SlotPointer", _AlwaysPointer)
 
@@ -130,43 +131,71 @@ def _bare_iface():
     iface.subscription_callbacks = {}
     iface._callback_lock = threading.Lock()
     iface._sub_cv = threading.Condition()
-    iface._sub_pending = {}
+    iface._sub_reqid_to_rf = {}
+    iface._sub_pending_rfs = set()
     iface._sub_results = {}
     iface.stop_event = threading.Event()
     iface.stop_event.set()  # keep __del__ from touching connections on GC
     return iface
 
 
+def _register_pending(iface, request_id, ran_function_id):
+    """Simulate what the outbound thread records after a subscribe() returns
+    the assigned request id (request_id -> RF mapping + pending marker)."""
+    with iface._sub_cv:
+        iface._sub_pending_rfs.add(ran_function_id)
+        iface._sub_reqid_to_rf[request_id] = ran_function_id
+
+
 def test_subscription_result_tied_to_gnb_response():
     """A queued request is not an accepted one: wait_for_subscription_result
-    reflects the gNB's SubscriptionResponse (by requestId), or None on timeout."""
+    reflects the gNB's SubscriptionResponse, correlated to the RF by the request
+    id libe3 assigned to the subscribe, or None on timeout."""
     iface = _bare_iface()
 
-    # No response yet for a pending RF=1 request → timeout returns None.
-    with iface._sub_cv:
-        iface._sub_pending[42] = 1
+    # RF=1 subscribed (request id 42), no response yet → wait times out (None).
+    _register_pending(iface, request_id=42, ran_function_id=1)
     assert iface.wait_for_subscription_result(1, timeout=0.05) is None
 
-    # Positive response (requestId 42) → accepted.
+    # Fresh RF=1 subscribe (request id 44); a positive response for id 44 → accepted.
+    _register_pending(iface, request_id=44, ran_function_id=1)
     iface._handle_subscription_response(
-        {"dAppIdentifier": 7, "requestId": 42, "responseCode": "positive", "subscriptionId": 3}
+        {"dAppIdentifier": 7, "requestId": 44, "responseCode": "positive", "subscriptionId": 3}
     )
     assert iface.wait_for_subscription_result(1, timeout=0.05) is True
 
-    # Negative response for a different RF → rejected.
-    with iface._sub_cv:
-        iface._sub_pending[43] = 2
+    # RF=2 subscribed (request id 43); a negative response for id 43 → rejected.
+    _register_pending(iface, request_id=43, ran_function_id=2)
     iface._handle_subscription_response(
         {"dAppIdentifier": 7, "requestId": 43, "responseCode": "negative"}
     )
     assert iface.wait_for_subscription_result(2, timeout=0.05) is False
 
 
+def test_subscription_correlation_survives_dropped_response():
+    """If one SubscriptionResponse is dropped, the other is still correctly
+    correlated by request id — the old FIFO pairing would have cross-assigned
+    the surviving response to the wrong RF and desynced for the rest of the run.
+    """
+    iface = _bare_iface()
+    _register_pending(iface, request_id=10, ran_function_id=1)
+    _register_pending(iface, request_id=11, ran_function_id=2)
+
+    # RF=1's response (req 10) is dropped; only RF=2's (req 11) arrives.
+    iface._handle_subscription_response(
+        {"dAppIdentifier": 7, "requestId": 11, "responseCode": "positive"}
+    )
+
+    # RF=2 correctly accepted; RF=1 gets no verdict (times out) rather than
+    # being wrongly assigned RF=2's response.
+    assert iface.wait_for_subscription_result(2, timeout=0.05) is True
+    assert iface.wait_for_subscription_result(1, timeout=0.05) is None
+
+
 def test_subscription_wait_unblocks_on_async_response():
     """A response arriving on another thread unblocks a waiter promptly."""
     iface = _bare_iface()
-    with iface._sub_cv:
-        iface._sub_pending[7] = 1
+    _register_pending(iface, request_id=7, ran_function_id=1)
 
     def responder():
         time.sleep(0.05)

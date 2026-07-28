@@ -4,6 +4,26 @@ A complete tutorial on how to deploy a dApp can be found on the [OpenRAN Gym web
 
 ## Installation
 
+### Prerequisite: libe3 Python bindings (`libe3py`)
+
+All **E3AP** operations (transport, setup handshake, subscribe, indication/control
+framing, and the ASN.1/JSON/Protobuf wire encoding) are handled by
+[**libe3**](https://github.com/wineslab/libe3); this library keeps only the
+**E3SM** (service-model) encode/decode in Python — the same split OAI uses on the
+RAN side. You must therefore install libe3 with its Python bindings **into the
+same interpreter/venv** that runs the dApp, *before* installing this package:
+
+```bash
+cd ~/libe3
+./build_libe3 --install --enable-swig \
+  --cmake-opt "-DLIBE3_ENABLE_ASN1=ON -DLIBE3_ENABLE_JSON=ON"
+python3 -c "import libe3py; print('libe3py OK')"
+```
+
+The dApp's `--link` / `--transport` / `--encoding` must match the gNB's
+`E3Configuration`. See [libe3's `swig/README.md`](https://github.com/wineslab/libe3/blob/main/swig/README.md)
+for the binding architecture.
+
 ### Python package installation (recommended)
 
 ```
@@ -192,7 +212,7 @@ spear-openairinterface5g/openair2/E3AP/service_models/<sm_name>_sm/
 
 For dApp-side (when `--target dapp` or `both`):
 ```
-spear-dApp/src/<sm_name>/
+dApp-library/src/<sm_name>/
 ├── __init__.py
 ├── <sm_name>_dapp.py       # Main dApp implementation
 └── defs/
