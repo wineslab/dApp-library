@@ -76,7 +76,6 @@ wheel.packages = [
     "src/dapp",
     "src/e3interface",
     "src/spectrum",
-    "src/nvidia",
     "src/simple",
     "src/iq_saver",
     "src/visualization",
