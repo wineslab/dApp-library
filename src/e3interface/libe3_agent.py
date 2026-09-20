@@ -33,11 +33,47 @@ except ImportError:  # pragma: no cover - environment dependent
 
 LIBE3PY_AVAILABLE = _libe3 is not None
 
-_IMPORT_HINT = (
-    "libe3py is not importable. Build and install the libe3 Python bindings "
-    "into this environment:\n"
+#: Minimum libe3 this package works against. 0.2.0 added the correlation id
+#: that ``DAppSession.send_report()`` takes as a mandatory argument, so an older
+#: binding does not merely lose a feature -- it cannot complete the E3 setup
+#: handshake against a matching gNB, which surfaces as "RAN refused Setup".
+LIBE3_MIN_VERSION = "0.2.0"
+
+
+def _libe3py_is_current() -> bool:
+    """Whether the imported binding is libe3 >= :data:`LIBE3_MIN_VERSION`.
+
+    libe3py exports no library version (only ``LIBE3_PROTOCOL_VERSION``, which
+    did not change), so this probes for the thing we actually depend on:
+    ``E3Event.sequence_id``, added in 0.2.0 alongside the mandatory
+    ``send_report`` argument. Checked against a real 0.0.12 binding, which does
+    not have it. Replace with a version compare if libe3 ever exports one --
+    tracked as a request against libe3.
+    """
+    if _libe3 is None:
+        return False
+    return hasattr(getattr(_libe3, "E3Event", object), "sequence_id")
+
+
+#: True when libe3py is importable *and* new enough to drive this package.
+LIBE3PY_USABLE = LIBE3PY_AVAILABLE and _libe3py_is_current()
+
+_BUILD_CMD = (
     "  cd ~/libe3 && ./build_libe3 --install --enable-swig "
     '--cmake-opt "-DLIBE3_ENABLE_ASN1=ON -DLIBE3_ENABLE_JSON=ON"'
+)
+
+_IMPORT_HINT = (
+    "libe3py is not importable. Build and install the libe3 Python bindings "
+    "into this environment:\n" + _BUILD_CMD
+)
+
+_VERSION_HINT = (
+    f"the installed libe3py predates libe3 {LIBE3_MIN_VERSION} (no "
+    "E3Event.sequence_id). That release made the correlation id a mandatory "
+    "argument of DAppSession.send_report(), so this binding cannot complete "
+    "the E3 setup handshake against a matching gNB -- the run fails with "
+    "'RAN refused Setup'. Rebuild and reinstall the bindings:\n" + _BUILD_CMD
 )
 
 # ErrorCode.SUCCESS is 0 in libe3.
@@ -105,6 +141,10 @@ class Libe3Agent:
         # surface later as an opaque setup timeout.
         if not LIBE3PY_AVAILABLE:
             raise ImportError(_IMPORT_HINT)
+        # Fail here, with the reason, rather than several frames deeper inside
+        # libe3 at setup time where the message names nothing actionable.
+        if not LIBE3PY_USABLE:
+            raise ImportError(_VERSION_HINT)
 
         link = (link or "zmq").lower()
         transport = (transport or "ipc").lower()
