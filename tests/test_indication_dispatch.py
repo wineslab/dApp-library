@@ -34,8 +34,8 @@ class _FakeIface:
     def __init__(self):
         self.controls = []
 
-    def schedule_control(self, *, dappId, ranFunctionId, controlId, actionData):
-        self.controls.append((ranFunctionId, controlId, actionData))
+    def schedule_control(self, *, dappId, ranFunctionId, controlId, actionData, sequenceId=0):
+        self.controls.append((ranFunctionId, controlId, actionData, sequenceId))
 
 
 def test_dispatch_routes_by_ran_function_id(monkeypatch):
@@ -71,7 +71,7 @@ def test_dispatch_routes_by_ran_function_id(monkeypatch):
 def _sent_sets(iface):
     """Decode the blocked set from each captured control (create_prb_block_control
     is patched to return the sorted list bytes)."""
-    return [set(eval(a.decode())) if a else set() for (_, _, a) in iface.controls]
+    return [set(eval(a.decode())) if a else set() for (_, _, a, _seq) in iface.controls]
 
 
 def test_prb_reconcile_replace_semantics():
@@ -106,6 +106,31 @@ def test_prb_reconcile_replace_semantics():
 
     # Every emitted control is the FULL set (never a bare delta).
     assert _sent_sets(d.e3_interface) == [{1, 2}, {1, 2, 5}, {5}]
+
+
+def test_xapp_control_echoes_the_correlation_id():
+    """A block installed on an xApp's behalf carries that xApp's correlation id
+    back to the RAN; one the dApp decided on its own carries 0.
+
+    The RAN keys its pending-control table on this id, so dropping it means the
+    xApp never learns when its decision reached the air.
+    """
+    d = _bare_dapp()
+    d._prb_block_lock = threading.Lock()
+    d._prb_block_detect = set()
+    d._prb_block_xapp = set()
+    d._prb_block_sent = set()
+    d.e3_interface = _FakeIface()
+    d.create_prb_block_control = lambda blocked_prbs, update_sampling=False: repr(
+        sorted(blocked_prbs)
+    ).encode()
+
+    d._reconcile_prb_blocks(xapp={3}, sequence_id=4242)
+    assert d.e3_interface.controls[-1][3] == 4242
+
+    # A detection-driven block answers to nobody.
+    d._reconcile_prb_blocks(detect={9})
+    assert d.e3_interface.controls[-1][3] == 0
 
 
 def test_clear_prb_blocks_is_unconditional():

@@ -119,7 +119,7 @@ class SimpleDApp(DApp):
             dapp_logger.exception("Failed to decode Simple-Indication; ignoring")
 
     @override
-    def _handle_xapp_control(self, dapp_identifier: int, data: bytes):
+    def _handle_xapp_control(self, dapp_identifier: int, data: bytes, sequence_id: int = 0):
         try:
             msg = self._decode_simple_message("Simple-ConfigControl", data)
             dapp_logger.info(f"[SIMPLE] xApp ConfigControl: {msg}")

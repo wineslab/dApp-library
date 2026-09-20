@@ -20,7 +20,10 @@ classifiers = [
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 # NOTE: E3AP transport is provided by libe3's Python bindings (`libe3py`),
-# which are not on PyPI. Install them into this environment with:
+# which are not on PyPI. **libe3 >= 0.2.0 is required**: 0.2.0 added the
+# correlation id that DAppSession.send_report() now takes as a mandatory
+# argument, so an older binding fails at the E3 setup handshake against a
+# matching gNB. Install them into this environment with:
 #   cd ~/libe3 && ./build_libe3 --install --enable-swig \
 #     --cmake-opt "-DLIBE3_ENABLE_ASN1=ON -DLIBE3_ENABLE_JSON=ON"
 # (asn1tools is still required for the in-Python service-model codecs.)

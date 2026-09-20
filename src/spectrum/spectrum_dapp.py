@@ -734,7 +734,8 @@ class SpectrumSharingDApp(DApp):
 
     def _reconcile_prb_blocks(self, *, detect: set | None = None,
                               xapp: set | None = None,
-                              update_sampling: bool = False) -> None:
+                              update_sampling: bool = False,
+                              sequence_id: int = 0) -> None:
         """Recompute the union of all PRB-block sources and, if it changed,
         push the FULL set to the gNB (install is REPLACE, not additive).
 
@@ -742,6 +743,11 @@ class SpectrumSharingDApp(DApp):
         threads (``xapp=``) both call this. Sending only a delta would let one
         source's change unblock PRBs the other still wants blocked, so we always
         re-send the reconciled union.
+
+        ``sequence_id`` is the correlation id of the xApp control that prompted
+        this, echoed onto the control we re-issue so the RAN can tell that xApp
+        when its decision reached the air. 0 for a detection-driven block, which
+        answers to nobody.
         """
         with self._prb_block_lock:
             if detect is not None:
@@ -760,6 +766,7 @@ class SpectrumSharingDApp(DApp):
                 ranFunctionId=self.PRB_CONTROL_RAN_FUNCTION_ID,
                 controlId=self.SPECTRUM_CONTROL_ID_PRB_BLOCK,
                 actionData=control_payload,
+                sequenceId=sequence_id,
             )
             self._prb_block_sent = set(desired)
         dapp_logger.info(
@@ -1374,8 +1381,9 @@ class SpectrumSharingDApp(DApp):
         return keep & 0x3FFF
 
     @override
-    def _handle_xapp_control(self, dapp_identifier: int, data: bytes):
-        dapp_logger.info(f'Triggered control callback for dApp {dapp_identifier}')
+    def _handle_xapp_control(self, dapp_identifier: int, data: bytes, sequence_id: int = 0):
+        dapp_logger.info(
+            f'Triggered control callback for dApp {dapp_identifier} (seq={sequence_id})')
 
         env = self._decode_xapp_control_envelope(data)
         if env["payload_key"] != "prbBlockedControl":
@@ -1390,7 +1398,8 @@ class SpectrumSharingDApp(DApp):
         # Route the xApp's absolute list through the same reconciled set as the
         # detection loop. Under the gNB's REPLACE install the two controllers
         # would otherwise clobber each other; reconciling sends the full union.
-        self._reconcile_prb_blocks(xapp={int(p) for p in prb_blk_list})
+        self._reconcile_prb_blocks(xapp={int(p) for p in prb_blk_list},
+                                   sequence_id=sequence_id)
         dapp_logger.info(f"Sending Control to RAN: blacklistedPRBs={prb_blk_list}")
 
         if self.save_iqs:

@@ -143,7 +143,15 @@ class DApp(ABC):
         return scheduled
 
     @abstractmethod
-    def _handle_xapp_control(self, dapp_identifier: int, data: bytes):
+    def _handle_xapp_control(self, dapp_identifier: int, data: bytes, sequence_id: int = 0):
+        """Handle a control addressed to this dApp by an xApp.
+
+        ``sequence_id`` is the correlation id of the xApp procedure. Echo it on
+        the control re-issued to the RAN so the RAN can report back when the
+        decision reached the air. Implementations written before the id existed
+        may still take two arguments; E3Interface detects that and calls them
+        the old way.
+        """
         # This in the future might become a class
         pass
 

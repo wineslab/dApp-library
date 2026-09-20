@@ -1,3 +1,4 @@
+import inspect
 import queue
 import threading
 import time
@@ -21,6 +22,34 @@ from .libe3_agent import (
 POLL_MAX_BATCH = 256
 POLL_TIMEOUT_MS = 100
 SETUP_WAIT_MS = 6000
+
+
+def _accepts_sequence_id(callback) -> bool:
+    """True if ``callback`` takes the trailing correlation id.
+
+    Cached on the function object: this runs per xApp control, and
+    inspect.signature() is not cheap. A callback that takes *args is assumed to
+    want it.
+    """
+    cached = getattr(callback, "_e3_accepts_seq", None)
+    if cached is not None:
+        return cached
+    try:
+        params = inspect.signature(callback).parameters
+        accepts = (
+            len([p for p in params.values()
+                 if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]) >= 3
+            or any(p.kind is p.VAR_POSITIONAL for p in params.values())
+        )
+    except (TypeError, ValueError):
+        # Builtins and C callables have no introspectable signature; assume the
+        # older two-argument form, which is what every dApp shipped before.
+        accepts = False
+    try:
+        callback._e3_accepts_seq = accepts
+    except AttributeError:
+        pass
+    return accepts
 
 
 class E3Interface:
@@ -232,7 +261,8 @@ class E3Interface:
                                 ev.dapp_id, ev.ran_function_id, ev.get_payload())
                         elif kind == EVENT_XAPP_CONTROL:
                             self._handle_xapp_control_data(
-                                ev.dapp_id, ev.ran_function_id, ev.get_payload())
+                                ev.dapp_id, ev.ran_function_id, ev.get_payload(),
+                                ev.sequence_id)
                         elif kind == EVENT_SUBSCRIPTION_RESPONSE:
                             self._handle_subscription_response({
                                 'dAppIdentifier': ev.dapp_id,
@@ -286,13 +316,16 @@ class E3Interface:
                     match msg:
                         case "control":
                             rc = self.agent.send_control(
-                                data["ranFunctionId"], data["controlId"], data["actionData"])
+                                data["ranFunctionId"], data["controlId"], data["actionData"],
+                                data.get("sequenceId", 0))
                         case "subscription":
                             self._send_subscription(data)
                         case "ack":
                             rc = self.agent.send_message_ack(data["requestId"], data["positive"])
                         case "report":
-                            rc = self.agent.send_report(data["ranFunctionId"], data["reportData"])
+                            rc = self.agent.send_report(
+                                data["ranFunctionId"], data["reportData"],
+                                data.get("sequenceId", 0))
                         case "release":
                             rc = self.agent.release()
                         case _:
@@ -390,25 +423,34 @@ class E3Interface:
         else:
             e3_logger.warning(f"No indication callback registered for dApp {dapp_identifier}")
 
-    def _handle_xapp_control_data(self, dapp_identifier, ran_function_id, xapp_control_data):
+    def _handle_xapp_control_data(self, dapp_identifier, ran_function_id, xapp_control_data,
+                                  sequence_id=0):
         e3_logger.debug(
-            "Received xAppControlAction: dApp=%s, ranFunc=%s, payload=%d bytes",
-            dapp_identifier, ran_function_id, len(xapp_control_data),
+            "Received xAppControlAction: dApp=%s, ranFunc=%s, payload=%d bytes, seq=%s",
+            dapp_identifier, ran_function_id, len(xapp_control_data), sequence_id,
         )
         with self._callback_lock:
             callbacks = list(self.xapp_control_callbacks.get(dapp_identifier, []))
         if callbacks:
             e3_logger.debug(f"Launch {len(callbacks)} xApp control callback(s) for dApp {dapp_identifier}")
             for callback in callbacks:
-                callback(dapp_identifier, xapp_control_data)
+                # Callbacks predating the correlation id take two arguments. Decide
+                # from the signature rather than catching TypeError, which would
+                # re-invoke a callback that raised one of its own.
+                if _accepts_sequence_id(callback):
+                    callback(dapp_identifier, xapp_control_data, sequence_id)
+                else:
+                    callback(dapp_identifier, xapp_control_data)
         else:
             e3_logger.warning(f"No xApp control callback registered for dApp {dapp_identifier}")
 
-    def schedule_control(self, dappId: int, ranFunctionId: int, controlId: int, actionData: bytes = b""):
+    def schedule_control(self, dappId: int, ranFunctionId: int, controlId: int, actionData: bytes = b"",
+                         sequenceId: int = 0):
         self.outbound_queue.put(('control', {
             'ranFunctionId': ranFunctionId,
             'controlId': controlId,
             'actionData': actionData,
+            'sequenceId': sequenceId,
         }))
 
     def schedule_report(self, dappId: int, ranFunctionId: int, reportData: bytes):

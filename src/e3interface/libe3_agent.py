@@ -218,11 +218,25 @@ class Libe3Agent:
     def unsubscribe(self, ran_function_id: int) -> int:
         return self._session.unsubscribe(int(ran_function_id))
 
-    def send_control(self, ran_function_id: int, control_id: int, action_data: bytes = b"") -> int:
-        return self._session.send_control(int(ran_function_id), int(control_id), bytes(action_data))
+    def send_control(self, ran_function_id: int, control_id: int, action_data: bytes = b"",
+                     sequence_id: int = 0) -> int:
+        """Send a control to the RAN.
 
-    def send_report(self, ran_function_id: int, report_data: bytes) -> int:
-        return self._session.send_report(int(ran_function_id), bytes(report_data))
+        ``sequence_id`` is the correlation id of the xApp procedure this control
+        carries out. Echo the id from the xApp control that prompted it, so the
+        RAN can report back when the decision reached the air; 0 means the dApp
+        decided on its own and there is no procedure to answer.
+        """
+        return self._session.send_control(int(ran_function_id), int(control_id), bytes(action_data),
+                                          int(sequence_id))
+
+    def send_report(self, ran_function_id: int, report_data: bytes, sequence_id: int = 0) -> int:
+        """Send a report to the RAN.
+
+        ``sequence_id`` is the correlation id this dApp assigns to the detection;
+        it travels to the xApp on the resulting E2 indication. 0 means unset.
+        """
+        return self._session.send_report(int(ran_function_id), bytes(report_data), int(sequence_id))
 
     def send_message_ack(self, request_id: int, positive: bool = True) -> int:
         return self._session.send_message_ack(int(request_id), 0 if positive else 1)
@@ -234,7 +248,8 @@ class Libe3Agent:
 
         Returns the SWIG ``E3EventVec`` (iterable of events, each with ``kind``,
         ``dapp_id``, ``ran_function_id``, ``subscription_id``, ``request_id``,
-        ``response_code`` and ``get_payload()`` returning native ``bytes``).
+        ``sequence_id``, ``response_code`` and ``get_payload()`` returning native
+        ``bytes``).
         Empty on timeout. The GIL is released for the whole call so libe3's
         threads run freely.
         """
