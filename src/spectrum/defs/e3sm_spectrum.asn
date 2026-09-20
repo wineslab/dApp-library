@@ -44,7 +44,13 @@ Spectrum-RanFunctionData ::= SEQUENCE {
 -- checking the ring slot's own (sfn, slot) tag against this indication
 -- (torn/wrap guard).
 --
--- timestamp   : CLOCK_MONOTONIC nanoseconds at the publish point.
+-- timestamp   : CLOCK_MONOTONIC nanoseconds at the publish point. Monotonic, not
+--               realtime, because this indication cannot leave the host: it
+--               carries only a reference into the local /e3_l2_sensing shm ring,
+--               so a dApp elsewhere could not dereference it. Monotonic shares an
+--               origin across processes on one host, which is exactly the span
+--               this measures. Never difference it against
+--               Spectrum-DAppReportData.timestamp, which is realtime.
 -- sfn / slot  : frame and slot the snapshot belongs to.
 -- beam        : OPTIONAL - set 0..3 when the upstream sensing scheduler grows
 --               multi-beam support; the writer currently always emits 0.
@@ -108,11 +114,27 @@ Spectrum-PRBBlacklistReport ::= SEQUENCE {
 }
 
 Spectrum-DAppReportPayload ::= CHOICE {
-    prbBlacklistReport      Spectrum-PRBBlacklistReport
+    prbBlacklistReport      Spectrum-PRBBlacklistReport,
+    ...
 }
 
 -- Top-level dApp report PDU carried by E3-DAppReport.reportData
+--
+-- timestamp is CLOCK_REALTIME nanoseconds at the dApp, taken when the report is
+-- built. The gNB relays reportData without decoding it, so the value reaches the
+-- xApp unchanged.
+--
+-- CLOCK_REALTIME, unlike Spectrum-SensingIndication.timestamp above: this report
+-- is always sent on to an xApp and therefore changes host, while the sensing
+-- indication is meant to stay on the same host (it carries only a reference into
+-- a local POSIX shm ring, so it is useless anywhere else). The two fields share a
+-- name but not a clock and must never be differenced against each other.
+--
+-- OPTIONAL: absent means "no producer reference". A dApp that does not stamp is
+-- sending a normal message, not a malformed one, so no codec on this path may
+-- reject it. Same convention as the E3AP envelope timestamp in libe3.
 Spectrum-DAppReportData ::= SEQUENCE {
+    timestamp               INTEGER OPTIONAL,
     reportPayload           Spectrum-DAppReportPayload
 }
 
@@ -134,14 +156,65 @@ Spectrum-ConfigControl ::= SEQUENCE {
 
 Spectrum-XAppControlPayload ::= CHOICE {
     prbBlockedControl       Spectrum-PRBBlockedControl,
-    configControl           Spectrum-ConfigControl
+    configControl           Spectrum-ConfigControl,
+    ...
 }
 
 -- Top-level xApp control PDU carried by E3-XAppControlAction.xAppControlData
+--
+-- timestamp is CLOCK_REALTIME nanoseconds at the xApp, taken when the control is
+-- built. The gNB forwards xAppControlData without decoding it, so the value
+-- reaches the dApp unchanged. Realtime for the same reason as the report above:
+-- this message always changes host.
 Spectrum-XAppControlData ::= SEQUENCE {
+    timestamp               INTEGER OPTIONAL,
     controlPayload          Spectrum-XAppControlPayload
 }
 
+
+-- ============================================================================
+-- APPLY OUTCOME STRUCTURES
+-- ============================================================================
+--
+-- What the RAN reports back about a control it applied. This is Service Model
+-- territory, not E3AP or E2SM-DAPP territory: "applied" means something
+-- different for every control this SM defines, and a PRB block is only "in
+-- effect" once the scheduler has actually put the mask on the air, which is a
+-- later instant than the handler returning. The E2SM-DAPP control outcome
+-- carries this as an opaque octet string, the same way it carries a control.
+--
+-- Both timestamps are CLOCK_REALTIME nanoseconds at the gNB, chosen so the xApp
+-- can difference them against Spectrum-DAppReportData.timestamp, which is on the
+-- same clock. They are payload fields, deliberately not latrec records: latrec
+-- is CLOCK_MONOTONIC and the two must never be differenced against each other.
+
+Spectrum-PRBBlockApplyOutcome ::= SEQUENCE {
+    -- Mask written into the MAC, i.e. the control handler's install returning.
+    installedTimestamp      INTEGER OPTIONAL,
+    -- First scheduler tick that put the mask on the air. Later than
+    -- installedTimestamp by up to one slot, and by a stochastic amount: the
+    -- install runs on the control thread, the tick on the MAC thread.
+    onAirTimestamp          INTEGER OPTIONAL,
+    -- The frame and slot of that tick, so a reader can place it in the radio
+    -- frame rather than only on the wall clock.
+    sfn                     INTEGER (0..1023) OPTIONAL,
+    slot                    INTEGER (0..maxSlotIndex) OPTIONAL,
+    ...
+}
+
+Spectrum-ApplyOutcomePayload ::= CHOICE {
+    prbBlockApplyOutcome    Spectrum-PRBBlockApplyOutcome,
+    ...
+}
+
+-- Top-level apply-outcome PDU, carried by the E2SM-DAPP control outcome.
+--
+-- timestamp is when the outcome itself was built, which is not when anything was
+-- applied; the applied instants are in the payload.
+Spectrum-ApplyOutcomeData ::= SEQUENCE {
+    timestamp               INTEGER OPTIONAL,
+    applyOutcomePayload     Spectrum-ApplyOutcomePayload
+}
 
 -- ============================================================================
 -- CONSTANTS AND CONSTRAINTS
@@ -151,6 +224,7 @@ Spectrum-XAppControlData ::= SEQUENCE {
 maxPRBs                     INTEGER ::= 273                                 -- Maximum PRBs in 5G NR
 maxPRBIndex                 INTEGER ::= 272                                 -- maxPRBs - 1
 maxSlotsFrame               INTEGER ::= 160                                 -- slots per frame at 3GPP numerology 4 (worst case); 20 at numerology 1 (30 kHz SCS)
+maxSlotIndex                INTEGER ::= 159                                 -- maxSlotsFrame - 1
 maxSymbolMask               INTEGER ::= 16383                               -- 14-bit symbol bitmap = (1 << 14) - 1
 
 END

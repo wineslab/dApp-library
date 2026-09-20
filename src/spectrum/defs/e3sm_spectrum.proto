@@ -44,7 +44,7 @@ message SpectrumPRBBlacklistControl {
 
 message SpectrumSensingPolicyControl {
   repeated uint32 mask_per_slot = 1;
-  optional bool deactivate = 2;
+  optional bool deactivate = 2 [default = false];  // ASN.1 BOOLEAN DEFAULT FALSE
   optional uint32 validity_period = 3;
 }
 
@@ -60,6 +60,10 @@ message SpectrumPRBBlacklistReport {
 }
 
 message SpectrumDAppReportData {
+  // CLOCK_REALTIME ns at the dApp; survives the opaque gNB relay to the xApp.
+  // Realtime, unlike SpectrumSensingIndication.timestamp, because this message
+  // always changes host; the two share a name but not a clock.
+  optional uint64 timestamp = 3;
   oneof report_payload {
     SpectrumPRBBlacklistReport prb_blacklist_report = 1;
   }
@@ -76,6 +80,8 @@ message SpectrumConfigControl {
 }
 
 message SpectrumXAppControlData {
+  // CLOCK_REALTIME ns at the xApp; survives the opaque gNB relay to the dApp.
+  optional uint64 timestamp = 3;
   oneof control_payload {
     SpectrumPRBBlockedControl prb_blocked_control = 1;
     SpectrumConfigControl config_control = 2;

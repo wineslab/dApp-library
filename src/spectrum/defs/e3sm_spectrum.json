@@ -212,9 +212,34 @@
       },
       "required": ["controlType", "controlPayload"]
     },
+    "Spectrum-PRBBlockApplyOutcome": {
+      "type": "object",
+      "properties": {
+        "installedTimestamp": { "type": "integer", "minimum": 0 },
+        "onAirTimestamp": { "type": "integer", "minimum": 0 },
+        "sfn": { "type": "integer", "minimum": 0, "maximum": 1023 },
+        "slot": { "type": "integer", "minimum": 0, "maximum": 159 }
+      }
+    },
+    "Spectrum-ApplyOutcomeData": {
+      "type": "object",
+      "properties": {
+        "timestamp": { "type": "integer", "minimum": 0 },
+        "applyOutcomeType": { "type": "string", "enum": ["prbBlockApplyOutcome"] },
+        "applyOutcomePayload": {
+          "type": "object",
+          "properties": {
+            "prbBlockApplyOutcome": { "$ref": "#/$defs/Spectrum-PRBBlockApplyOutcome" }
+          },
+          "oneOf": [{ "required": ["prbBlockApplyOutcome"] }]
+        }
+      },
+      "required": ["applyOutcomeType", "applyOutcomePayload"]
+    },
     "Spectrum-DAppReportData": {
       "type": "object",
       "properties": {
+        "timestamp": { "type": "integer", "minimum": 0 },
         "reportType": { "type": "string", "enum": ["prbBlacklist"] },
         "reportPayload": {
           "type": "object",
@@ -231,6 +256,7 @@
     "Spectrum-XAppControlData": {
       "type": "object",
       "properties": {
+        "timestamp": { "type": "integer", "minimum": 0 },
         "controlType": { "type": "string", "enum": ["prbBlocked", "config"] },
         "controlPayload": {
           "type": "object",
