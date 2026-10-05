@@ -899,7 +899,7 @@ class SpectrumSharingDApp(DApp):
 
     def _encode_envelope(self, *, msg_type: str, type_field: str, payload_field: str,
                          type_value: str, payload_key: str, inner_type: str,
-                         inner: dict) -> bytes:
+                         inner: dict, timestamp: int | None = None) -> bytes:
         if self.encoding_method == "protobuf":
             # The ASN.1 CHOICE maps to a proto3 oneof: setting the member named
             # `payload_key` is the discriminator (no separate type field on the
@@ -908,16 +908,20 @@ class SpectrumSharingDApp(DApp):
             # the pinned json_names.
             from google.protobuf import json_format
             msg = self._spectrum_pb_new(msg_type)
-            json_format.ParseDict({payload_key: inner}, msg)
+            doc = {payload_key: inner}
+            if timestamp is not None:
+                doc["timestamp"] = timestamp
+            json_format.ParseDict(doc, msg)
             return msg.SerializeToString()
         if self.encoding_method == "asn1":
             # The gNB's ASN.1 "*Data" envelopes are payload-only SEQUENCEs: the
             # CHOICE alternative is the on-wire discriminator, so NO separate
             # type field is encoded (see src/spectrum/defs/e3sm_spectrum.asn,
             # aligned byte-for-byte with the merged develop-dapp gNB).
-            return self.spectrum_encoder.encode(msg_type, {
-                payload_field: (payload_key, inner),
-            })
+            doc = {payload_field: (payload_key, inner)}
+            if timestamp is not None:
+                doc["timestamp"] = timestamp
+            return self.spectrum_encoder.encode(msg_type, doc)
         if self.encoding_method == "json":
             # JSON keeps an explicit, human-readable type key next to the
             # payload. The gNB's JSON decoder treats it as OPTIONAL (and only
@@ -927,6 +931,8 @@ class SpectrumSharingDApp(DApp):
                 inner_type, inner.copy(), self._SPECTRUM_JSON_BINARY_FIELDS
             )
             envelope = {type_field: type_value, payload_field: {payload_key: prepared}}
+            if timestamp is not None:
+                envelope["timestamp"] = timestamp
             self._validate_spectrum_message(msg_type, envelope)
             return json.dumps(envelope).encode("utf-8")
         raise ValueError(f"Unsupported encoding method: {self.encoding_method}")
@@ -934,7 +940,9 @@ class SpectrumSharingDApp(DApp):
     def _decode_envelope(self, data: bytes, *, msg_type: str, type_field: str,
                          payload_field: str, inner_type_map: dict,
                          type_by_key: dict | None = None) -> dict:
-        """Returns ``{"type": str | None, "payload_key": str, "payload": dict}``.
+        """Returns ``{"type": str | None, "payload_key": str, "payload": dict,
+        "timestamp": int | None}``; ``timestamp`` is the producer's optional
+        CLOCK_REALTIME stamp, ``None`` when the sender did not set one.
 
         ``type_by_key`` maps a CHOICE payload key to its human-readable type
         string; it is used on the ASN.1 path where the type is not carried on
@@ -948,16 +956,20 @@ class SpectrumSharingDApp(DApp):
             msg = self._spectrum_pb_new(msg_type)
             msg.ParseFromString(bytes(data))
             d = sm_helpers.pb_message_to_dict(msg)
+            timestamp = d.pop("timestamp", None)
             if not d:
-                return {"type": None, "payload_key": None, "payload": {}}
+                return {"type": None, "payload_key": None, "payload": {},
+                        "timestamp": timestamp}
             payload_key, payload = next(iter(d.items()))
             return {"type": type_by_key.get(payload_key),
-                    "payload_key": payload_key, "payload": payload}
+                    "payload_key": payload_key, "payload": payload,
+                    "timestamp": timestamp}
         if self.encoding_method == "asn1":
             env = self.spectrum_encoder.decode(msg_type, data)
             payload_key, payload = env[payload_field]
             return {"type": type_by_key.get(payload_key),
-                    "payload_key": payload_key, "payload": payload}
+                    "payload_key": payload_key, "payload": payload,
+                    "timestamp": env.get("timestamp")}
         if self.encoding_method == "json":
             env = json.loads(data.decode("utf-8"))
             self._validate_spectrum_message(msg_type, env)
@@ -968,7 +980,8 @@ class SpectrumSharingDApp(DApp):
                     inner_type, payload, self._SPECTRUM_JSON_BINARY_FIELDS
                 )
             return {"type": env.get(type_field, type_by_key.get(payload_key)),
-                    "payload_key": payload_key, "payload": payload}
+                    "payload_key": payload_key, "payload": payload,
+                    "timestamp": env.get("timestamp")}
         raise ValueError(f"Unsupported encoding method: {self.encoding_method}")
 
     def _encode_dapp_control_envelope(self, *, type_value, payload_key, inner_type, inner) -> bytes:
@@ -980,11 +993,13 @@ class SpectrumSharingDApp(DApp):
         )
 
     def _encode_dapp_report_envelope(self, *, type_value, payload_key, inner_type, inner) -> bytes:
+        # CLOCK_REALTIME, not monotonic: the gNB relays the report to an xApp on
+        # another host, so only the wall clock is comparable there.
         return self._encode_envelope(
             msg_type="Spectrum-DAppReportData",
             type_field="reportType", payload_field="reportPayload",
             type_value=type_value, payload_key=payload_key,
-            inner_type=inner_type, inner=inner,
+            inner_type=inner_type, inner=inner, timestamp=time.time_ns(),
         )
 
     def _decode_xapp_control_envelope(self, data: bytes) -> dict:
@@ -1386,6 +1401,10 @@ class SpectrumSharingDApp(DApp):
             f'Triggered control callback for dApp {dapp_identifier} (seq={sequence_id})')
 
         env = self._decode_xapp_control_envelope(data)
+        if env["timestamp"]:
+            # Realtime on both ends (different hosts), so this includes their clock skew.
+            dapp_logger.info(
+                f"[xAppCtrl] xApp-to-dApp {(time.time_ns() - env['timestamp']) // 1000} us")
         if env["payload_key"] != "prbBlockedControl":
             dapp_logger.info(
                 f"xApp control variant {env['type']!r}/{env['payload_key']!r} "
@@ -1604,9 +1623,10 @@ class SpectrumSharingDApp(DApp):
         # Timestamp passed downstream — used by IQSaver annotations.
         # producer_ts_ns is monotonic-ish ns; CSV annotations store it as-is.
         # sfn/slot ride along for diagnostics; ranges drives the
-        # worker-thread 2D sensing-window slice.
+        # worker-thread 2D sensing-window slice, narrowed to valid_symbol_mask.
         self._enqueue_for_worker(
-            (iq_symbols, p.timestamp_ns, p.sfn, p.slot, ranges, t)
+            (iq_symbols, p.timestamp_ns, p.sfn, p.slot, ranges,
+             p.valid_symbol_mask, t)
         )
 
     def _enqueue_for_worker(self, item) -> None:
@@ -1640,7 +1660,7 @@ class SpectrumSharingDApp(DApp):
         the inbound thread so we can't lose data."""
         while not self._ind_worker_stop.is_set():
             try:
-                iq_symbols, timestamp, sfn, slot, ranges, t = (
+                iq_symbols, timestamp, sfn, slot, ranges, valid_symbol_mask, t = (
                     self._ind_queue.get(timeout=0.1)
                 )
             except queue.Empty:
@@ -1658,7 +1678,7 @@ class SpectrumSharingDApp(DApp):
             self._ind_worker_last_iter_ns = t.dequeue_ns
             try:
                 self._process_indication(
-                    iq_symbols, timestamp, sfn, slot, ranges, t
+                    iq_symbols, timestamp, sfn, slot, ranges, t, valid_symbol_mask
                 )
             except Exception:
                 dapp_logger.exception(
@@ -1707,7 +1727,7 @@ class SpectrumSharingDApp(DApp):
                     self._ind_queue_dropped, self._ind_queue.qsize(),
                 )
 
-    def _build_detector_input(self, mag_batch, ranges):
+    def _build_detector_input(self, mag_batch, ranges, valid_symbol_mask: int = 0x3FFF):
         """Per-PRB magnitude vector that the threshold detector should
         learn from when sensing_only is on. Builds the same 2D keep mask
         as the dashboard filter, then collapses kept cells per-PRB
@@ -1746,6 +1766,10 @@ class SpectrumSharingDApp(DApp):
             if sym_lo >= sym_hi or sc_lo >= sc_hi:
                 continue
             keep[sym_lo:sym_hi, sc_lo:sc_hi] = True
+        # DL and guard symbols of a mixed slot hold the gNB's own TX leakage.
+        for sym in range(n_sym):
+            if not (valid_symbol_mask >> sym) & 1:
+                keep[sym] = False
         if not keep.any():
             return None
         # Per-PRB-column mean over kept symbols. Columns where no symbol
@@ -1759,14 +1783,17 @@ class SpectrumSharingDApp(DApp):
         return out, col_keep
 
     def _process_indication(self, iq_symbols, timestamp,
-                            sfn: int, slot: int, ranges, t: Timings):
+                            sfn: int, slot: int, ranges, t: Timings,
+                            valid_symbol_mask: int = 0x3FFF):
         """Worker-thread processing of an already-shm-read slot. iq_symbols
         is a list of flat float32 [I,Q,I,Q,...] arrays (one per symbol of
         antenna 0), already rescaled by 1/fp16_beta upstream. ``ranges`` is the
         tuple of SensingRange the RF=2 handler looked up in ``_sensing_cache``
         for this (sfn,slot) — cross-SM correlation with the RF=1 Spectrum
         indication that cached them; drives the 2D dashboard filter and the
-        detector window when ``self.sensing_only`` is enabled."""
+        detector window when ``self.sensing_only`` is enabled.
+        ``valid_symbol_mask`` is the gNB's per-slot bitmap of symbols that carry
+        off-air UL IQ; the others are excluded from the detector window."""
         _ = (sfn, slot)  # reserved for future per-slot diagnostics
         now = time.monotonic()
         n_sym = len(iq_symbols)
@@ -1852,7 +1879,7 @@ class SpectrumSharingDApp(DApp):
                 # the detector entirely and preserve prior state.
                 self._record_latency(t)
                 return
-            det_input = self._build_detector_input(mag_batch, ranges)
+            det_input = self._build_detector_input(mag_batch, ranges, valid_symbol_mask)
             if det_input is None:
                 # No sensing-window cells in this slot — don't let the
                 # detector learn this update at all (preserves prior state).
