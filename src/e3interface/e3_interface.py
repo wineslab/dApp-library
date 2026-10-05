@@ -3,6 +3,7 @@ import queue
 import threading
 import time
 
+from . import latrec
 from .e3_logging import e3_logger
 from .libe3_agent import (
     Libe3Agent,
@@ -247,6 +248,7 @@ class E3Interface:
     def _inbound_connection(self):
         """Batched drain of libe3 inbound events into the callback dispatchers."""
         e3_logger.info("Start inbound loop")
+        latrec.open_ring("dapp.inbound")
         last_dropped = 0
         try:
             while not self.stop_event.is_set():
@@ -257,9 +259,13 @@ class E3Interface:
                     try:
                         kind = ev.kind
                         if kind == EVENT_INDICATION:
+                            if latrec.ENABLED:
+                                latrec.ctx_set(ev.trace_seq)
                             self._handle_indication_data(
                                 ev.dapp_id, ev.ran_function_id, ev.get_payload())
                         elif kind == EVENT_XAPP_CONTROL:
+                            if latrec.ENABLED:
+                                latrec.ctx_set(ev.request_id or ev.trace_seq)
                             self._handle_xapp_control_data(
                                 ev.dapp_id, ev.ran_function_id, ev.get_payload(),
                                 ev.sequence_id)
@@ -299,6 +305,7 @@ class E3Interface:
     def _outbound_connection(self):
         """Drain the outbound queue and forward each message through libe3."""
         e3_logger.info("Start outbound loop")
+        latrec.open_ring("dapp.outbound")
         try:
             while not self.stop_event.is_set():
                 try:
@@ -313,6 +320,10 @@ class E3Interface:
                 try:
                     e3_logger.debug("Outbound queue has got '%s', %s", msg, data)
                     rc = SUCCESS
+                    # libe3 stamps the producer's key into EMIT_ENTER from this
+                    # thread's context; reset it so an ack does not inherit a
+                    # stale one.
+                    latrec.ctx_set(data.get("latSeq", 0))
                     match msg:
                         case "control":
                             rc = self.agent.send_control(
@@ -453,12 +464,14 @@ class E3Interface:
             'controlId': controlId,
             'actionData': actionData,
             'sequenceId': sequenceId,
+            'latSeq': latrec.ctx(),
         }))
 
     def schedule_report(self, dappId: int, ranFunctionId: int, reportData: bytes):
         self.outbound_queue.put(('report', {
             'ranFunctionId': ranFunctionId,
             'reportData': reportData,
+            'latSeq': latrec.ctx(),
         }))
 
     def add_subscription_callback(self, dapp_id: int, callback):
