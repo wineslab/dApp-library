@@ -19,7 +19,7 @@ import jsonschema
 # np.set_printoptions(threshold=sys.maxsize)
 
 from dapp.dapp import DApp
-from e3interface import sm_helpers
+from e3interface import latrec, sm_helpers
 from e3interface.e3_logging import dapp_logger, LOG_DIR
 from spectrum.e3_ran_buffers_reader import (
     E3RanBuffersReader,
@@ -67,6 +67,7 @@ class Timings:
     after_meta_ns: int = 0
     after_shm_ns: int = 0
     producer_ts_ns: int = 0
+    lat_seq: int = 0  # latrec key of the indication this slot came from
     dequeue_ns: int = 0
     after_mag_ns: int = 0
     after_dash_ns: int = 0
@@ -985,8 +986,17 @@ class SpectrumSharingDApp(DApp):
                     "timestamp": env.get("timestamp")}
         raise ValueError(f"Unsupported encoding method: {self.encoding_method}")
 
+    def _encode_traced(self, pdu_type: int, **kwargs) -> bytes:
+        seq = latrec.ctx()
+        latrec.stamp(seq, latrec.CREATE_OUTPUT, 0, pdu_type)
+        latrec.stamp(seq, latrec.ENCODE_E3SM_BEGIN, 0, pdu_type)
+        out = self._encode_envelope(**kwargs)
+        latrec.stamp(seq, latrec.ENCODE_E3SM_DONE, len(out), pdu_type)
+        return out
+
     def _encode_dapp_control_envelope(self, *, type_value, payload_key, inner_type, inner) -> bytes:
-        return self._encode_envelope(
+        return self._encode_traced(
+            latrec.PDU_CONTROL,
             msg_type="Spectrum-DAppControlData",
             type_field="controlType", payload_field="controlPayload",
             type_value=type_value, payload_key=payload_key,
@@ -996,7 +1006,8 @@ class SpectrumSharingDApp(DApp):
     def _encode_dapp_report_envelope(self, *, type_value, payload_key, inner_type, inner) -> bytes:
         # CLOCK_REALTIME, not monotonic: the gNB relays the report to an xApp on
         # another host, so only the wall clock is comparable there.
-        return self._encode_envelope(
+        return self._encode_traced(
+            latrec.PDU_REPORT,
             msg_type="Spectrum-DAppReportData",
             type_field="reportType", payload_field="reportPayload",
             type_value=type_value, payload_key=payload_key,
@@ -1401,7 +1412,10 @@ class SpectrumSharingDApp(DApp):
         dapp_logger.info(
             f'Triggered control callback for dApp {dapp_identifier} (seq={sequence_id})')
 
+        seq = latrec.ctx()
+        latrec.stamp(seq, latrec.DECODE_E3SM_BEGIN, len(data), latrec.PDU_XAPP_CONTROL)
         env = self._decode_xapp_control_envelope(data)
+        latrec.stamp(seq, latrec.DECODE_E3SM_DONE, 1, latrec.PDU_XAPP_CONTROL)
         if env["timestamp"]:
             # Realtime on both ends (different hosts), so this includes their clock skew.
             dapp_logger.info(
@@ -1420,6 +1434,7 @@ class SpectrumSharingDApp(DApp):
         # would otherwise clobber each other; reconciling sends the full union.
         self._reconcile_prb_blocks(xapp={int(p) for p in prb_blk_list},
                                    sequence_id=sequence_id)
+        latrec.stamp(seq, latrec.APPLY_POLICY_DONE, len(prb_blk_list))
         dapp_logger.info(f"Sending Control to RAN: blacklistedPRBs={prb_blk_list}")
 
         if self.save_iqs:
@@ -1496,12 +1511,14 @@ class SpectrumSharingDApp(DApp):
         indication decodes as a valid L1-KPM one ~25% of the time); the
         ranFunctionIdentifier is the only authoritative discriminant.
         """
-        t = Timings(recv_ns=time.monotonic_ns())
+        t = Timings(recv_ns=time.monotonic_ns(), lat_seq=latrec.ctx())
         if not data:
             return
 
         if ran_function_id == self.RAN_FUNCTION_ID:
+            latrec.stamp(t.lat_seq, latrec.DECODE_E3SM_BEGIN, len(data), latrec.PDU_INDICATION)
             p = SlotPointer.from_bytes(data, encoding=self.encoding_method)
+            latrec.stamp(t.lat_seq, latrec.DECODE_E3SM_DONE, p is not None, latrec.PDU_INDICATION)
             if p is not None:
                 self._handle_l1_indication(p, t)
                 return
@@ -1521,10 +1538,14 @@ class SpectrumSharingDApp(DApp):
         ranges (read from the /e3_l2_sensing ring) keyed by (sfn, slot) for the
         RF=2 IQ handler. Returns False if the payload isn't a sensing indication.
         """
+        seq = latrec.ctx()
+        latrec.stamp(seq, latrec.DECODE_E3SM_BEGIN, len(data), latrec.PDU_INDICATION)
         try:
             msg = self._decode_spectrum_message("Spectrum-SensingIndication", data)
         except Exception:
+            latrec.stamp(seq, latrec.DECODE_E3SM_DONE, 0, latrec.PDU_INDICATION)
             return False
+        latrec.stamp(seq, latrec.DECODE_E3SM_DONE, 1, latrec.PDU_INDICATION)
         try:
             sfn, slot = int(msg["sfn"]), int(msg["slot"])
             if self.encoding_method in ("asn1", "protobuf"):
@@ -1659,6 +1680,7 @@ class SpectrumSharingDApp(DApp):
         """Drain _ind_queue → mag/detector/dashboard pipeline on pre-read
         data. Lag here only delays display; shm-read already happened on
         the inbound thread so we can't lose data."""
+        latrec.open_ring("dapp.worker")
         while not self._ind_worker_stop.is_set():
             try:
                 iq_symbols, timestamp, sfn, slot, ranges, valid_symbol_mask, t = (
@@ -1667,6 +1689,7 @@ class SpectrumSharingDApp(DApp):
             except queue.Empty:
                 continue
             t.dequeue_ns = time.monotonic_ns()
+            latrec.ctx_set(t.lat_seq)
             # Record the max gap between successive successful dequeues
             # since the last stats window.  A 5s freeze in the dashboard
             # shows up here as a 5s gap — the smoking gun for upstream
@@ -1964,6 +1987,7 @@ class SpectrumSharingDApp(DApp):
         dc_low, dc_high = self.DC_LEAKAGE_PRB_LOW, self.DC_LEAKAGE_PRB_HIGH
         detected_prbs = detected_prbs[(detected_prbs < dc_low) | (detected_prbs > dc_high)]
         reported_prbs = detected_prbs
+        latrec.stamp(t.lat_seq, latrec.PROCESS_DONE, int(detected_prbs.size))
         report_payload = self.create_prb_blacklist_report(
             blacklisted_prbs=reported_prbs.astype(int).tolist()
         )

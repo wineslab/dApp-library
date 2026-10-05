@@ -26,6 +26,7 @@ from typing import override
 import asn1tools
 
 from dapp.dapp import DApp
+from e3interface import latrec
 from e3interface.e3_logging import dapp_logger
 
 
@@ -106,14 +107,19 @@ class SimpleDApp(DApp):
     def _handle_indication(self, dapp_identifier, ran_function_id, data: bytes):
         """Decode a Simple-Indication and, if enabled, echo a control every 5th."""
         self.indication_count += 1
+        lat = latrec.ctx()
         try:
+            latrec.stamp(lat, latrec.DECODE_E3SM_BEGIN, len(data), latrec.PDU_INDICATION)
             msg = self._decode_simple_message("Simple-Indication", data)
+            latrec.stamp(lat, latrec.DECODE_E3SM_DONE, 1, latrec.PDU_INDICATION)
             seq = msg.get("data1")
             dapp_logger.info(f"[SIMPLE] indication from dApp {dapp_identifier}: {msg}")
             if seq is None:
                 dapp_logger.error("Simple-Indication missing data1")
                 return
-            if self.control and seq % 5 == 0:
+            send = self.control and seq % 5 == 0
+            latrec.stamp(lat, latrec.PROCESS_DONE, send)
+            if send:
                 self._do_control(seq)
         except Exception:
             dapp_logger.exception("Failed to decode Simple-Indication; ignoring")
@@ -191,8 +197,12 @@ class SimpleDApp(DApp):
         """Send a Simple-Control(samplingThreshold=seq%101), like simple_dapp.cpp."""
         sampling_threshold = int(seq) % 101
         try:
+            lat = latrec.ctx()
+            latrec.stamp(lat, latrec.CREATE_OUTPUT, 0, latrec.PDU_CONTROL)
+            latrec.stamp(lat, latrec.ENCODE_E3SM_BEGIN, 0, latrec.PDU_CONTROL)
             action_data = self._encode_simple_message(
                 "Simple-Control", {"samplingThreshold": sampling_threshold})
+            latrec.stamp(lat, latrec.ENCODE_E3SM_DONE, len(action_data), latrec.PDU_CONTROL)
             self.e3_interface.schedule_control(
                 dappId=self.dapp_id,
                 ranFunctionId=self.RAN_FUNCTION_ID,

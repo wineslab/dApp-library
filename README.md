@@ -24,6 +24,15 @@ The dApp's `--link` / `--transport` / `--encoding` must match the gNB's
 `E3Configuration`. See [libe3's `swig/README.md`](https://github.com/wineslab/libe3/blob/main/swig/README.md)
 for the binding architecture.
 
+#### Latency recording (optional)
+
+Per-stage latency records (latrec) come from libe3 itself: build the bindings with
+`--cmake-opt "-DLIBE3_ENABLE_LATREC=ON"` and the dApp stamps its E3SM decode,
+processing, output creation, E3SM encode and xApp-policy apply stages into libe3's
+rings, joinable with libe3's own by `tools/latrec2csv.py`. There is no runtime
+switch; against a binding built without it every stamp is a no-op. See libe3's
+`docs/latrec.md`.
+
 ### Python package installation (recommended)
 
 ```
