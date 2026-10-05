@@ -1386,7 +1386,7 @@ function parseMsg(buf){
     flush();
 }
 function flush(){
-  if(rowCount===0&&!latestRaw) return;
+  if(rowCount===0&&!latestRaw){ postMessage({type:'counters',dropped:dropped,consumed:consumed}); return; }
   const rows=rowBuf.slice(0,rowCount*N_SC);
   const raw = latestRaw ? latestRaw : new Uint8Array(0);
   const det = latestDet || null;
@@ -1411,6 +1411,7 @@ onmessage=function(e){
     let g_consumed = 0, g_dropped = 0;   // cumulative; reported to the server for the ceiling measurement
     _wkr.onmessage = (e) => {
         const m = e.data;
+        if (m && m.type === 'counters') { g_consumed = m.consumed; g_dropped = m.dropped; return; }
         if (!m || m.type !== 'block') return;
         const _t0 = performance.now();
         // Stage the worker's pre-assembled rows into pendingBuf; the rAF does the
