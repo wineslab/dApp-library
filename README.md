@@ -96,8 +96,8 @@ This dApp implements a spectrum sharing use case discussed in [our paper](https:
 
 **Spectrum Sensing Configuration:**
 
-- `--noise-floor-threshold` - Set the noise floor threshold (in dB) for determining the presence of incumbents and for detecting the PRBs affected. If not specified, will be auto-detected based on environment
-- `--ota` - Specify if the setup is Over-The-Air (OTA) or on Colosseum testbed for using a precalculated noise floor threshold. If `--noise-floor-threshold` is specified, this parameter is ignored
+- `--noise-floor-threshold` - Set the noise floor threshold (in dB) for determining the presence of incumbents and for detecting the PRBs affected. If not specified, the `--ru` profile value is used
+- `--ru` / `-ru` - Radio-unit profile (default: `usrp`) seeding the defaults of `--num-prbs`, `--num-subcarrier-spacing`, `--center-freq`, `--noise-floor-threshold`, `--fp16-beta`, `--sample-rate` and `--max-samples-per-file`. Explicit flags always win. Profiles: `usrp` (alias `x310`), `x410`, `x310-3p58`, `colosseum`, `foxconn`, `foxconn-273`, `benetel`, `rfsim`; see `src/spectrum/ru_profiles.py`. Settings a profile does not calibrate fall back to generic defaults with a warning. This replaces the former `--ota` flag
 
 **Visualization Options:**
 
@@ -109,10 +109,13 @@ This dApp implements a spectrum sharing use case discussed in [our paper](https:
 
 **Radio Configuration:**
 
-- `--num-prbs` - Number of Physical Resource Blocks in the channel (default: 106)
-- `--num-subcarrier-spacing` - Subcarrier spacing in kHz. Use 30 for FR1 (sub-6 GHz) (default: 30)
+- `--num-prbs` - Number of Physical Resource Blocks in the channel (default: from `--ru`, 106 for `usrp`)
+- `--num-subcarrier-spacing` - Subcarrier spacing in kHz. Use 30 for FR1 (sub-6 GHz) (default: from `--ru`, 30)
 - `--e` - Enable 3/4 FFT sampling mode. Set this flag if the gNB was started with the `-E` option
-- `--center-freq` - Center frequency in Hz (default: 3.6192e9, which is 3.6192 GHz)
+- `--center-freq` - Center frequency in Hz (default: from `--ru`, 3.6192e9 for `usrp`)
+- `--sample-rate` - Front-end (ADC) sample rate in Hz, written as the SigMF `core:sample_rate` (default: from `--ru`; the occupied bandwidth when the profile has none)
+- `--fp16-beta` - FP16 IQ rescale factor, must match the gNB build/config (default: from `--ru`, 1/128 for USRPs and 1/2048 otherwise)
+- `--max-samples-per-file` - SigMF segment length in samples (default: one second of the write rate, `num_prbs * 12 * SCS`)
 
 **Execution Control:**
 

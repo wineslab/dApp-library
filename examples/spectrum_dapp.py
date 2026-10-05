@@ -14,6 +14,12 @@ from spectrum.spectrum_dapp import (
     compute_fft_size,
     make_periodic_toggle_callback,
 )
+from spectrum.ru_profiles import (
+    DEFAULT_RU,
+    RU_CHOICES,
+    resolve_ru_settings,
+    uncalibrated_keys,
+)
 from spectrum.threshold_detector import StaticThresholdDetector, AdaptiveThresholdDetector
 
 LOG_DIR = '/tmp/'
@@ -37,18 +43,27 @@ def main(args):
             "--time-window/--moving-avg-window/--extraction-window flags."
         )
 
-    # This value really depends on the RF conditions and the RU used and
-    # should be carefully calibrated.
-    if args.noise_floor_threshold:
-        print('Using custom configuration')
-        noise_floor_threshold = args.noise_floor_threshold
-    else:
-        if args.ota:
-            print('Using OTA configuration')
-            noise_floor_threshold = 20
-        else:  # Colosseum
-            print('Using Colosseum configuration')
-            noise_floor_threshold = 53
+    settings = resolve_ru_settings(args.ru, {
+        'num_prbs': args.num_prbs,
+        'num_subcarrier_spacing': args.num_subcarrier_spacing,
+        'center_freq': args.center_freq,
+        'noise_floor_threshold': args.noise_floor_threshold,
+        'fp16_beta': args.fp16_beta,
+        'front_end_sample_rate': args.sample_rate,
+        'max_samples_per_file': args.max_samples_per_file,
+    })
+    print(f"Using radio-unit profile '{args.ru}': {settings}")
+    uncalibrated = [
+        key for key in uncalibrated_keys(args.ru)
+        if getattr(args, key, None) is None
+    ]
+    if uncalibrated:
+        print(f"[WARNING] Profile '{args.ru}' has no calibrated value for "
+              f"{', '.join(uncalibrated)}; using generic defaults")
+
+    # The noise floor depends on the RF conditions and the RU and should be
+    # carefully calibrated.
+    noise_floor_threshold = settings['noise_floor_threshold']
 
     print(f'Threshold is {noise_floor_threshold}')
 
@@ -56,7 +71,7 @@ def main(args):
     # Build the detection strategy explicitly so the example is the
     # authoritative place for detector configuration.
     # ------------------------------------------------------------------
-    fft_size = compute_fft_size(args.num_prbs, args.e)
+    fft_size = compute_fft_size(settings['num_prbs'], args.e)
 
     if args.use_adaptive_noise_floor:
         detector = AdaptiveThresholdDetector(
@@ -95,13 +110,14 @@ def main(args):
         viz_web_port=args.viz_web_port,
         viz_zmq_port=args.viz_zmq_port,
         external_viz=args.external_viz,
-        center_freq=args.center_freq,
-        num_prbs=args.num_prbs,
+        center_freq=settings['center_freq'],
+        num_prbs=settings['num_prbs'],
         e_sampling=args.e,
-        num_subcarrier_spacing=args.num_subcarrier_spacing,
+        num_subcarrier_spacing=settings['num_subcarrier_spacing'],
         sampling_threshold=args.sampling_threshold,
-        max_samples_per_file=args.max_samples_per_file,
-        fp16_beta=args.fp16_beta,
+        max_samples_per_file=settings['max_samples_per_file'],
+        fp16_beta=settings['fp16_beta'],
+        front_end_sample_rate=settings['front_end_sample_rate'],
         sensing_only=args.sensing_only,
         strict_sensing=args.strict_sensing,
         min_sensing_symbols=args.min_sensing_symbols,
@@ -191,16 +207,21 @@ if __name__ == "__main__":
                         help="Send PRB-block control messages to the gNB when "
                              "PRBs are detected above the noise threshold")
     parser.add_argument('--noise-floor-threshold', type=int, default=None,
-                        help="Detection threshold in dB (static) or dB above noise floor (adaptive)")
+                        help="Detection threshold in dB (static) or dB above noise floor (adaptive); "
+                             "default: from --ru")
     parser.add_argument('--use-adaptive-noise-floor', action='store_true', default=False,
                         help="Use per-bin median noise floor estimation instead of a fixed threshold")
     parser.add_argument('--embargo-timeout-secs', type=float, default=10.1,
                         help="Hold time in seconds for embargoed PRBs after last detection (adaptive mode)")
     parser.add_argument('--average-over-frames', type=int, default=64,
                         help="Number of frames to average before each decision")
-    parser.add_argument('--ota', action='store_true', default=False,
-                        help="Use OTA threshold (20 dB) instead of Colosseum (53 dB). "
-                             "Ignored when --noise-floor-threshold is set.")
+    parser.add_argument('--ru', '-ru', type=str, default=DEFAULT_RU,
+                        choices=RU_CHOICES,
+                        help="Radio-unit profile seeding the defaults of --num-prbs, "
+                             "--num-subcarrier-spacing, --center-freq, "
+                             "--noise-floor-threshold, --fp16-beta, --sample-rate and "
+                             "--max-samples-per-file. Explicit flags always win. "
+                             f"Default: {DEFAULT_RU}.")
     parser.add_argument('--energy-gui', action='store_true', default=False,
                         help="Enable energy spectrum visualization")
     parser.add_argument('--iq-plotter-gui', action='store_true', default=False,
@@ -213,14 +234,18 @@ if __name__ == "__main__":
                         help="ZMQ port the dApp publishes on / the visualizer reads (default 5559)")
     parser.add_argument('--external-viz', action='store_true', default=False,
                         help="Don't spawn the visualizer; publish to an already-running one")
-    parser.add_argument('--num-prbs', type=int, default=106,
-                        help="Number of PRBs")
-    parser.add_argument('--num-subcarrier-spacing', type=int, default=30,
-                        help="Subcarrier spacing in kHz (FR1 = 30)")
+    parser.add_argument('--num-prbs', type=int, default=None,
+                        help="Number of PRBs (default: from --ru)")
+    parser.add_argument('--num-subcarrier-spacing', type=int, default=None,
+                        help="Subcarrier spacing in kHz (FR1 = 30; default: from --ru)")
     parser.add_argument('--e', action='store_true', default=False,
                         help="Enable 3/4 FFT sampling (OAI -E flag for USRPs)")
-    parser.add_argument('--center-freq', type=float, default=3.6192e9,
-                        help="RF center frequency in Hz")
+    parser.add_argument('--center-freq', type=float, default=None,
+                        help="RF center frequency in Hz (default: from --ru)")
+    parser.add_argument('--sample-rate', type=float, default=None, metavar='HZ',
+                        help="Front-end (ADC) sample rate in Hz, written as the SigMF "
+                             "core:sample_rate (default: from --ru; when the profile has "
+                             "none, the occupied bandwidth)")
     parser.add_argument('--timed', type=int, default=0, metavar='SECONDS',
                         help="Stop automatically after SECONDS (0 = run indefinitely)")
     parser.add_argument('--model', type=str, default='',
@@ -233,23 +258,22 @@ if __name__ == "__main__":
                         help="Samples to retain after CNN energy peak detection")
     parser.add_argument('--sampling-threshold', type=int, default=5,
                         help="Render a new dashboard frame every N IQ batches (visualization only, does not affect IQ delivery or recording)")
-    parser.add_argument('--max-samples-per-file', type=int, default=46_080_000,
+    parser.add_argument('--max-samples-per-file', type=int, default=None,
                         help="Rotate the SigMF capture file once a segment reaches "
-                             "this many true IQ samples (default 46080000). Each "
+                             "this many true IQ samples (default: one second of the "
+                             "dApp's write rate, num_prbs * 12 * SCS). Each "
                              "indication is kept whole, so a segment may exceed the "
                              "threshold by up to one indication's worth of samples. "
-                             "Segment wall-clock duration depends on the capture rate. "
                              "Only used with --save-iqs.")
     parser.add_argument('--ground-truth', type=str, default='', metavar='LABEL',
                         help="Initial ground truth label written into IQ annotations "
                              "(only used with --save-iqs). "
                              "Updatable at runtime via the dashboard GUI "
                              "when --demo-gui is also set.")
-    parser.add_argument('--fp16-beta', type=float, default=1.0 / 2048.0,
-                        help="FP16 IQ rescale factor; MUST match the gNB "
-                             "E3Configuration.fp16_beta (the reader rescales by "
-                             "1/beta). Default 1/2048 matches the gNB code default; "
-                             "the X410 sample conf overrides it to 0.0078125 (1/128).")
+    parser.add_argument('--fp16-beta', type=float, default=None,
+                        help="FP16 IQ rescale factor; MUST match the gNB build/config "
+                             "(the reader rescales by 1/beta). Default from --ru: "
+                             "1/128 for USRPs, 1/2048 otherwise.")
     parser.add_argument('--encoding-method', type=str, default='asn1',
                         choices=['asn1', 'json', 'protobuf'],
                         help="Wire encoding for Spectrum-* envelopes (default: asn1).")

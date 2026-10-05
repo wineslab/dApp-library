@@ -44,9 +44,9 @@ I/Q recording is only active when `--save-iqs` is passed. Without it, `--ground-
 ## Commands
 
 > [!NOTE]
-> `--ota` sets the noise floor to 20 dB, a value calibrated for the X310 USRP. That default
-> is **ignored** whenever `--noise-floor-threshold` is explicitly provided — the explicit value
-> always takes precedence regardless of `--ota`.
+> `--ru usrp` (the default) sets the noise floor to 20 dB, a value calibrated for the X310 USRP.
+> That default is **ignored** whenever `--noise-floor-threshold` is explicitly provided — the
+> explicit value always takes precedence regardless of `--ru`.
 
 The commands below use 53 dB as the noise floor threshold, which matches both the Colosseum
 testbed and the Foxconn RU calibration. Center frequency is 3.75 GHz with 106 PRBs.

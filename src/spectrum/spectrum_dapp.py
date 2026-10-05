@@ -250,8 +250,9 @@ class SpectrumSharingDApp(DApp):
     DC_LEAKAGE_GUARD_PRBS = 3
 
     # Defaults below assume: BW ≈ 40 MHz, center 3.6192 GHz, do_SRS=0 on
-    # the gNB. FFT size is 2048 (or 1536 with USRP -E sampling). Noise-
-    # floor threshold must be calibrated to the RU.
+    # the gNB. The reader delivers num_prbs * 12 natural-order carriers per
+    # symbol (no FFT padding). Noise-floor threshold and fp16_beta must be
+    # calibrated to the RU (see ru_profiles.py).
 
     def __init__(self, dapp_name: str = DAPP_NAME, dapp_version: str = DAPP_VERSION,
                  vendor: str = VENDOR, e3ap_protocol_version: str = E3AP_PROTOCOL_VERSION,
@@ -264,6 +265,7 @@ class SpectrumSharingDApp(DApp):
                  sampling_threshold: int = 5,
                  max_samples_per_file: int = 46_080_000,
                  fp16_beta: float = 1.0 / 2048.0,
+                 front_end_sample_rate: float | None = None,
                  sensing_only: bool = True,
                  strict_sensing: bool = False,
                  min_sensing_symbols: int = 1, **kwargs):
@@ -333,14 +335,14 @@ class SpectrumSharingDApp(DApp):
         # IQ recording
         if self.save_iqs:
             from iq_saver.iq_saver import IQSaver
-            # Nominal capture rate of the on-disk IQ. Each indication carries one
-            # OFDM symbol of fft_size post-FFT frequency-domain bins (OAI rxdataF);
-            # fft_size * subcarrier_spacing is the ADC sample rate that produced
-            # those bins, equivalently the total bandwidth the fft_size bins span.
-            # This is core:sample_rate per the SigMF spec, NOT the ~100 Hz sensing
-            # cadence at which indications arrive.
-            sample_rate = self.fft_size * self.num_subcarrier_spacing * 1e3
-            dapp_logger.info(f"Nominal IQ capture rate: {sample_rate / 1e6:.3f} Msps")
+            # core:sample_rate is the front-end (ADC) rate that produced the bins
+            # when the RU profile knows it; otherwise it falls back to the
+            # occupied bandwidth fft_size * subcarrier_spacing. It is NOT the
+            # ~100 Hz sensing cadence at which indications arrive.
+            write_rate = self.fft_size * self.num_subcarrier_spacing * 1e3
+            sample_rate = front_end_sample_rate or write_rate
+            dapp_logger.info(f"IQ capture core:sample_rate: {sample_rate / 1e6:.3f} Msps "
+                             f"(write rate {write_rate / 1e6:.3f} Msps)")
             # Detector decision window. The static detector averages `window` frames
             # before each PRB decision; the adaptive detector decides per frame. This
             # is recorded as dapp:average_over_frames and drives the annotation-time
@@ -349,11 +351,10 @@ class SpectrumSharingDApp(DApp):
                 average_over_frames = self._detector.window
             else:
                 average_over_frames = 1
-            # The dApp writes every received symbol undecimated, so the true
-            # on-disk rate equals the nominal rate. effective_sample_rate would
-            # only drop below core:sample_rate if the writer decimated on-device,
-            # which it does not.
-            effective_sample_rate = sample_rate
+            # The dApp writes every received symbol undecimated, so the on-disk
+            # rate is the occupied-bandwidth rate, which is at most the
+            # front-end core:sample_rate.
+            effective_sample_rate = write_rate
             self.iq_saver = IQSaver(
                 base_path=LOG_DIR,
                 center_freq=self.center_freq,
