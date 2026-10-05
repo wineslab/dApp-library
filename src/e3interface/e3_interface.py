@@ -332,7 +332,9 @@ class E3Interface:
                             e3_logger.error("Unrecognized outbound message: %r; dropping", msg)
                             continue
 
-                    if rc != SUCCESS:
+                    # A send returns the assigned message id (positive) on success
+                    # and a negative ErrorCode on failure.
+                    if rc < 0:
                         e3_logger.error("libe3 %s send failed (ErrorCode=%s)", msg, rc)
                 except Exception:
                     e3_logger.exception(
