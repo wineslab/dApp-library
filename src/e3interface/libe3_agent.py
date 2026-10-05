@@ -40,18 +40,23 @@ LIBE3PY_AVAILABLE = _libe3 is not None
 LIBE3_MIN_VERSION = "0.2.0"
 
 
+def _version_tuple(version: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in version.split(".")[:3])
+
+
 def _libe3py_is_current() -> bool:
     """Whether the imported binding is libe3 >= :data:`LIBE3_MIN_VERSION`.
 
-    libe3py exports no library version (only ``LIBE3_PROTOCOL_VERSION``, which
-    did not change), so this probes for the thing we actually depend on:
-    ``E3Event.sequence_id``, added in 0.2.0 alongside the mandatory
-    ``send_report`` argument. Checked against a real 0.0.12 binding, which does
-    not have it. Replace with a version compare if libe3 ever exports one --
-    tracked as a request against libe3.
+    Bindings from libe3 0.2.2 on export ``__version__``, which is compared
+    directly. Older bindings export no version, so they are probed for the thing
+    this package depends on: ``E3Event.sequence_id``, added in 0.2.0 alongside
+    the mandatory ``send_report`` argument.
     """
     if _libe3 is None:
         return False
+    version = getattr(_libe3, "__version__", None)
+    if version is not None:
+        return _version_tuple(version) >= _version_tuple(LIBE3_MIN_VERSION)
     return hasattr(getattr(_libe3, "E3Event", object), "sequence_id")
 
 
