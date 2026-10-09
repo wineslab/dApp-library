@@ -17,6 +17,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 
 import numpy as np
 import zmq
@@ -43,12 +44,27 @@ def _child_preexec():
         pass
 
 
+SC_PER_PRB = 12
+
+
 class SubcarrierPublisher:
-    """ZMQ PUB feeding the subcarrier visualizer; optionally spawns it."""
+    """ZMQ PUB feeding the subcarrier visualizer; optionally spawns it.
+
+    ``ctrl_port`` is the dApp's control REP the spawned dashboard proxies its
+    control panels to (0 disables them).
+    """
 
     def __init__(self, zmq_port: int = 5559, web_port: int = 5001,
                  num_prbs: int = 273, db_min: int = 20, db_max: int = 90,
-                 spawn_viz: bool = True):
+                 spawn_viz: bool = True, ctrl_port: int = 0,
+                 center_freq: float = 0.0, scs_khz: float = 30.0):
+        self._ctrl_port = int(ctrl_port)
+        self._center_freq = float(center_freq)
+        self._scs_khz = float(scs_khz)
+        # (freq_gran, time_gran, agg, subsample_n), swapped as one tuple.
+        self._viz_cfg = ("sc", "sym", "mean", 1)
+        self._viz_lock = threading.Lock()
+        self._slot_counter = 0
         self._db_min = int(db_min)
         self._db_max = int(db_max)
         self._span = max(1.0, float(self._db_max - self._db_min))
@@ -86,14 +102,16 @@ class SubcarrierPublisher:
             dapp_logger.error("Subcarrier visualizer not found at %s; not spawning", _VISUALIZER)
             return None
         try:
-            # --ctrl-port 0 disables the visualizer's control proxy: the Python
-            # dApp binds no REP, and 5560 may belong to a co-resident C++ dApp.
-            # start_new_session puts the child in its own process group so stop()
+            # The dashboard proxies its control panels to this dApp's own REP
+            # on loopback; port 0 leaves them disabled. start_new_session puts the child in its own process group so stop()
             # can kill the whole group; preexec sets PR_SET_PDEATHSIG on Linux.
             proc = subprocess.Popen(
                 [sys.executable, _VISUALIZER, "--port", str(web_port),
                  "--zmq-port", str(zmq_port), "--num-prbs", str(self._num_prbs),
-                 "--ctrl-port", "0"],
+                 "--center-freq", str(self._center_freq),
+                 "--scs-khz", str(self._scs_khz),
+                 "--ctrl-port", str(self._ctrl_port),
+                 "--ctrl-host", "127.0.0.1"],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 start_new_session=True,
                 preexec_fn=_child_preexec if sys.platform.startswith("linux") else None,
@@ -105,6 +123,40 @@ class SubcarrierPublisher:
             dapp_logger.error("Subcarrier visualizer exited immediately (rc=%s)", proc.returncode)
             return None
         return proc
+
+    def get_viz_config(self) -> dict:
+        freq, time_, agg, sub = self._viz_cfg
+        return {"freq_gran": freq, "time_gran": time_, "agg": agg,
+                "subsample_n": sub}
+
+    def set_viz_config(self, freq_gran: str | None = None,
+                       time_gran: str | None = None, agg: str | None = None,
+                       subsample_n: int | None = None) -> dict:
+        """Change what is published; validates everything before applying."""
+        with self._viz_lock:
+            freq, time_, cur_agg, sub = self._viz_cfg
+            if freq_gran is not None:
+                if freq_gran not in ("sc", "prb"):
+                    raise ValueError("freq_gran must be 'sc' or 'prb'")
+                freq = freq_gran
+            if time_gran is not None:
+                if time_gran not in ("sym", "slot"):
+                    raise ValueError("time_gran must be 'sym' or 'slot'")
+                time_ = time_gran
+            if agg is not None:
+                if agg not in ("mean", "max"):
+                    raise ValueError("agg must be 'mean' or 'max'")
+                cur_agg = agg
+            if subsample_n is not None:
+                if int(subsample_n) < 1:
+                    raise ValueError("subsample_n must be >= 1")
+                sub = int(subsample_n)
+            self._viz_cfg = (freq, time_, cur_agg, sub)
+        return self.get_viz_config()
+
+    @staticmethod
+    def _reduce(a: np.ndarray, axis: int, agg: str) -> np.ndarray:
+        return a.max(axis=axis) if agg == "max" else a.mean(axis=axis)
 
     def publish_slot(self, mag_2d: np.ndarray, sfn: int, slot: int,
                      blocked: np.ndarray | None = None,
@@ -118,6 +170,10 @@ class SubcarrierPublisher:
         """
         if self._sock is None:
             return
+        freq_gran, time_gran, agg, subsample = self._viz_cfg
+        self._slot_counter += 1
+        if subsample > 1 and (self._slot_counter % subsample) != 1:
+            return
         m = np.asarray(mag_2d, dtype=np.float32)
         if m.ndim != 2:
             return
@@ -125,6 +181,13 @@ class SubcarrierPublisher:
         # poisons the whole frame. Replace before quantizing.
         if not np.isfinite(m).all():
             m = np.nan_to_num(m, nan=0.0, posinf=0.0, neginf=0.0)
+        mask_in = None if blocked is None else np.asarray(blocked).reshape(-1)
+        if time_gran == "slot":
+            m = self._reduce(m, 0, agg).reshape(1, -1)
+        if freq_gran == "prb" and m.shape[1] % SC_PER_PRB == 0:
+            m = self._reduce(m.reshape(m.shape[0], -1, SC_PER_PRB), 2, agg)
+            if mask_in is not None and mask_in.size == m.shape[1] * SC_PER_PRB:
+                mask_in = (mask_in != 0).reshape(-1, SC_PER_PRB).any(axis=1)
         n_sym, n_sc = m.shape
         db = 20.0 * np.log10(np.maximum(m, 1e-6))
         u8 = np.clip((db - self._db_min) * (255.0 / self._span), 0, 255).astype(np.uint8)
@@ -133,8 +196,8 @@ class SubcarrierPublisher:
         det_n = 0
         thr = 0.0
         mask_bytes = b""
-        if blocked is not None:
-            mask = np.asarray(blocked).reshape(-1)
+        if mask_in is not None:
+            mask = mask_in
             if mask.size == n_sc:
                 det = 1
                 det_n = int(n_sc)

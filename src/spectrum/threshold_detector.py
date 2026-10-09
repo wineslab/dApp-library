@@ -140,6 +140,22 @@ class StaticThresholdDetector(ThresholdDetector):
     def threshold_db(self) -> float:
         return self._threshold_db
 
+    def configure(self, *, threshold_db: float | None = None,
+                  window: int | None = None) -> None:
+        """Change parameters between :meth:`update` calls (caller serialises).
+
+        A new ``window`` restarts the accumulation, otherwise the partial sum
+        would be divided by the wrong length.
+        """
+        if window is not None and int(window) < 1:
+            raise ValueError("window must be >= 1")
+        if threshold_db is not None:
+            self._threshold_db = float(threshold_db)
+        if window is not None and int(window) != self._window:
+            self._window = int(window)
+            self._acc[:] = 0.0
+            self._count = 0
+
     # ------------------------------------------------------------------
     # Introspection helpers (used by annotations)
     # ------------------------------------------------------------------
@@ -147,6 +163,14 @@ class StaticThresholdDetector(ThresholdDetector):
     @property
     def window(self) -> int:
         return self._window
+
+    @property
+    def fft_size(self) -> int:
+        return self._fft_size
+
+    def resized(self, fft_size: int) -> "StaticThresholdDetector":
+        """Same parameters, fresh state, ``fft_size`` bins."""
+        return StaticThresholdDetector(self._threshold_db, fft_size, self._window)
 
 
 class AdaptiveThresholdDetector(ThresholdDetector):
@@ -247,9 +271,39 @@ class AdaptiveThresholdDetector(ThresholdDetector):
     def threshold_db(self) -> float:
         return self._snr_threshold_db
 
+    def configure(self, *, snr_threshold_db: float | None = None,
+                  hist_depth: int | None = None,
+                  embargo_timeout_secs: float | None = None) -> None:
+        """Change parameters between :meth:`update` calls (caller serialises).
+
+        Validates everything before applying anything. A new ``hist_depth``
+        discards the noise-floor history (the buffer is shaped by it).
+        """
+        if hist_depth is not None and int(hist_depth) < 1:
+            raise ValueError("hist_depth must be >= 1")
+        if embargo_timeout_secs is not None and float(embargo_timeout_secs) < 0:
+            raise ValueError("embargo_timeout_secs must be >= 0")
+        if snr_threshold_db is not None:
+            self._snr_threshold_db = float(snr_threshold_db)
+        if hist_depth is not None and int(hist_depth) != self.hist_depth:
+            self._noise_floor_est = AdaptiveNoiseFloor(
+                n=self._fft_size, x=int(hist_depth))
+        if embargo_timeout_secs is not None:
+            self._embargo.hold_time = float(embargo_timeout_secs)
+
     # ------------------------------------------------------------------
     # Introspection helpers (used by annotations)
     # ------------------------------------------------------------------
+
+    @property
+    def fft_size(self) -> int:
+        return self._fft_size
+
+    def resized(self, fft_size: int) -> "AdaptiveThresholdDetector":
+        """Same parameters, fresh state, ``fft_size`` bins."""
+        return AdaptiveThresholdDetector(
+            self._snr_threshold_db, fft_size, self.hist_depth,
+            self._embargo.hold_time)
 
     @property
     def hist_depth(self) -> int:

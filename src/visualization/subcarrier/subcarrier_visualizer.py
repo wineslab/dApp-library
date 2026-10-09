@@ -84,6 +84,10 @@ VIZ_ZLIB_LEVEL    = max(1, min(9, int(os.environ.get('VIZ_ZLIB_LEVEL', '6'))))
 # Injected into the page as __N_SC__/__N_PRBS__; driven by --num-prbs.
 VIZ_SC_PER_PRB = 12
 VIZ_NUM_PRBS   = int(os.environ.get('VIZ_NUM_PRBS', '273'))
+# Carrier centre (Hz, 0 = unknown) and subcarrier spacing (kHz): give the x axis
+# absolute frequencies. Driven by --center-freq / --scs-khz.
+VIZ_CENTER_FREQ_HZ = float(os.environ.get('VIZ_CENTER_FREQ', '0'))
+VIZ_SCS_KHZ        = float(os.environ.get('VIZ_SCS_KHZ', '30'))
 
 # --- End-to-end pacing (browser-feedback shedding; default ON) ----------------
 # A proxy/ingress between the viz and the browser hides the slow hop from the
@@ -844,6 +848,26 @@ HTML_TEMPLATE = r'''
             width: 58px; flex-shrink: 0;
         }
 
+        .freq-ticks { height: 16px; min-height: 16px; flex: 0 0 16px; margin-bottom: 2px; }
+        .freq-ticks .mask-label { text-transform: none; }
+        .freq-ticks .ticks {
+            flex: 1; min-width: 0; position: relative;
+            color: var(--muted); font-size: 10px; user-select: none;
+            font-variant-numeric: tabular-nums;
+        }
+        .freq-ticks .ticks span { position: absolute; top: 2px; white-space: nowrap; }
+        .freq-ticks .ticks span::before {
+            content: ''; position: absolute; left: var(--tick-x, 50%); top: -2px;
+            width: 1px; height: 4px; background: var(--muted);
+        }
+        .freq-tip {
+            position: fixed; z-index: 50; pointer-events: none; display: none;
+            background: var(--panel-2); color: var(--text, #e6edf3);
+            border: 1px solid var(--border); border-radius: 3px;
+            padding: 3px 6px; font-size: 11px; white-space: nowrap;
+            font-variant-numeric: tabular-nums;
+        }
+
         .stats-container {
             display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
             gap: 8px; margin-top: 8px;
@@ -877,7 +901,7 @@ HTML_TEMPLATE = r'''
         <header class="topbar">
             <button id="sidebar-toggle" class="sidebar-toggle" title="Toggle sidebar">&#9776;</button>
             <h1>Subcarrier Power Waterfall</h1>
-            <p>antenna 0 &middot; 273 PRBs &times; 12 SCs &times; 14 OFDM symbols</p>
+            <p>antenna 0 &middot; __N_PRBS__ PRBs &times; 12 SCs &times; 14 OFDM symbols__CENTER_LABEL__</p>
             <div class="spacer"></div>
             <span class="status-pill">
                 <span class="status-indicator" id="status-dot"></span>
@@ -888,6 +912,8 @@ HTML_TEMPLATE = r'''
 
         <div class="app__main">
             <aside class="sidebar" id="sidebar">
+
+                <div class="sm-row"><span class="sm-help" id="ctrl-agent">control: checking&hellip;</span></div>
 
                 <details class="sm-group" open>
                     <summary>Spectrum SM <span class="sm-sub">gNB PRB block (RF=1)</span></summary>
@@ -907,7 +933,7 @@ HTML_TEMPLATE = r'''
                 </details>
 
                 <details class="sm-group" open>
-                    <summary>Adaptive Detector <span class="sm-sub">dApp-local</span></summary>
+                    <summary>Detector <span class="sm-sub" id="det-sub">dApp-local</span></summary>
                     <div class="sm-body">
                         <div class="sm-row">
                             <label><b>enabled</b></label>
@@ -920,8 +946,8 @@ HTML_TEMPLATE = r'''
                         <div class="sm-row">
                             <label><b>granularity</b></label>
                             <select id="det-granularity">
-                                <option value="prb">PRB (273)</option>
-                                <option value="sc" selected>subcarrier (3276)</option>
+                                <option value="prb">PRB (__N_PRBS__)</option>
+                                <option value="sc" selected>subcarrier (__N_SC__)</option>
                             </select>
                             <span class="sm-help">resets history on switch</span>
                         </div>
@@ -946,7 +972,7 @@ HTML_TEMPLATE = r'''
                                 <option value="false">off</option>
                                 <option value="true" selected>on</option>
                             </select>
-                            <span class="sm-help">mask L1 input to L2 sensing windows</span>
+                            <span class="sm-help">show and detect only the L2 sensing windows</span>
                         </div>
                         <div class="sm-row">
                             <span class="sm-help" id="det-help">disabled</span>
@@ -960,8 +986,8 @@ HTML_TEMPLATE = r'''
                         <div class="sm-row">
                             <label><b>freq granularity</b></label>
                             <select id="viz-freq-gran">
-                                <option value="sc" selected>subcarrier (3276)</option>
-                                <option value="prb">PRB (273)</option>
+                                <option value="sc" selected>subcarrier (__N_SC__)</option>
+                                <option value="prb">PRB (__N_PRBS__)</option>
                             </select>
                             <span class="sm-help">PRB averages 12 SCs</span>
                         </div>
@@ -990,8 +1016,8 @@ HTML_TEMPLATE = r'''
                         </div>
                         <div class="sm-row">
                             <label><b>freq zoom</b></label>
-                            <input type="number" id="viz-zoom-min" value="0" min="0" max="272" step="1" style="width:56px">
-                            <input type="number" id="viz-zoom-max" value="272" min="0" max="272" step="1" style="width:56px">
+                            <input type="number" id="viz-zoom-min" value="0" min="0" max="__N_PRBS_M1__" step="1" style="width:56px">
+                            <input type="number" id="viz-zoom-max" value="__N_PRBS_M1__" min="0" max="__N_PRBS_M1__" step="1" style="width:56px">
                             <span class="sm-help">PRB range min..max (display only)</span>
                         </div>
                         <div class="sm-row">
@@ -1044,6 +1070,11 @@ HTML_TEMPLATE = r'''
 
                 <div class="plot-box waterfall-box">
                     <h2>Waterfall</h2>
+                    <div class="spec-wrap mask-strip freq-ticks">
+                        <div class="mask-label" id="wf-ticks-unit"></div>
+                        <div class="ticks" id="wf-ticks"></div>
+                        <div class="mask-spacer"></div>
+                    </div>
                     <div class="spec-wrap mask-strip">
                         <div class="mask-label">Blocked</div>
                         <canvas id="mask-canvas"></canvas>
@@ -1060,7 +1091,7 @@ HTML_TEMPLATE = r'''
                             <span class="cb-tick">&minus;110 dBFS</span>
                         </div>
                     </div>
-                    <div class="spec-xaxis" id="wf-xaxis">Subcarrier Index 0 &rarr; 3275 (273 PRBs &times; 12 SCs, antenna 0)</div>
+                    <div class="spec-xaxis" id="wf-xaxis">Subcarrier Index 0 &rarr; __N_SC_M1__ (__N_PRBS__ PRBs &times; 12 SCs, antenna 0)</div>
                 </div>
             </section>
         </div>
@@ -1076,6 +1107,7 @@ HTML_TEMPLATE = r'''
         </footer>
     </div>
 
+<div class="freq-tip" id="freq-tip"></div>
 <script>
 // Shared data hub: the waterfall IIFE owns the WebSocket and re-emits each
 // parsed frame (raw Float32 power values) so the fosphor density panel can
@@ -1837,6 +1869,41 @@ void main() {
     requestAnimationFrame(render);
 })();
 
+// --- Control capabilities: which panels the dApp behind the control port can serve ---
+// `ctrlCaps` resolves to the dApp's `caps` reply. An agent that predates `caps`
+// answers "unknown cmd": treat it as "everything available". Any other error
+// (no control port, timeout) greys the dApp-backed panels with that reason.
+const ctrlCaps = fetch('/ctrl/caps').then(r => r.json()).catch(
+    () => ({ ok: false, error: 'control not reachable' }));
+function capsSection(caps, name) {
+    if (caps && caps.ok === false) {
+        if (/unknown cmd/.test(caps.error || '')) return { supported: true, legacy: true, fields: null, reason: '' };
+        return { supported: false, reason: caps.error || 'control not available' };
+    }
+    const sec = (caps && caps[name]) || { supported: true };
+    return sec;
+}
+function setDisabled(els, off, reason) {
+    els.filter(Boolean).forEach(el => {
+        el.disabled = off;
+        el.title = off ? reason : '';
+        el.style.opacity = off ? '0.5' : '';
+    });
+}
+ctrlCaps.then(caps => {
+    const el = document.getElementById('ctrl-agent');
+    if (!el) return;
+    if (caps && caps.ok) {
+        el.textContent = 'control: ' + (caps.dapp || 'dApp') + ' dApp';
+        el.style.color = 'var(--green)';
+    } else if (capsSection(caps, 'block').legacy) {
+        el.textContent = 'control: dApp (no capability report)';
+    } else {
+        el.textContent = 'control unavailable: ' + (caps && caps.error || 'unknown');
+        el.style.color = 'var(--red)';
+    }
+});
+
 // --- SigMF recording controls ---
 (function() {
     const btn  = document.getElementById('rec-btn');
@@ -1916,12 +1983,20 @@ void main() {
     });
 
     // Reflect existing state on page load (e.g. if visualizer reconnected mid-recording).
-    fetch('/record/status').then(r => r.json()).then(r => {
-        if (r && r.state === 'recording') {
-            setActive(r);
-            pollT = setInterval(poll, 1000);
+    ctrlCaps.then(caps => {
+        const sec = capsSection(caps, 'record');
+        if (!sec.supported) {
+            setDisabled([btn, dur, document.getElementById('rec-notes')], true, sec.reason);
+            info.textContent = sec.reason;
+            return;
         }
-    }).catch(() => {});
+        fetch('/record/status').then(r => r.json()).then(r => {
+            if (r && r.state === 'recording') {
+                setActive(r);
+                pollT = setInterval(poll, 1000);
+            }
+        }).catch(() => {});
+    });
 })();
 
 // --- Visualizer publish controls (granularity + subsample) ---
@@ -1953,9 +2028,27 @@ void main() {
     freqEl.addEventListener('change', apply);
     timeEl.addEventListener('change', apply);
     subEl.addEventListener('change', apply);
-    // Push the initial state once on load so the dApp matches the UI defaults
-    // after a visualizer reconnect / refresh.
-    apply();
+    // On load, read the dApp's state into the controls (never push UI defaults:
+    // a reload must not overwrite what the dApp was started with).
+    ctrlCaps.then(async caps => {
+        const sec = capsSection(caps, 'viz');
+        if (!sec.supported) {
+            setDisabled([freqEl, timeEl, subEl], true, sec.reason);
+            return;
+        }
+        try {
+            const r = await fetch('/viz/apply', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ config: {} }),
+            }).then(x => x.json());
+            if (r && r.ok) {
+                if (r.freq_gran) freqEl.value = r.freq_gran;
+                if (r.time_gran) timeEl.value = r.time_gran;
+                if (r.subsample_n) subEl.value = r.subsample_n;
+            }
+        } catch (_) { /* transient */ }
+    });
 })();
 
 // --- Adaptive detector controls ---
@@ -1990,6 +2083,21 @@ void main() {
         }
     }
 
+    // Fields the dApp says it can apply (null = all, e.g. an agent without caps).
+    let allowed = null;
+    const byKey = { enabled: enEl, granularity: grEl, threshold_db: thrEl,
+                    hist_depth: histEl, embargo_secs: embEl, mask_with_sensing: maskEl };
+
+    function fill(r) {
+        if (!r || r.ok === false) return;
+        if (typeof r.enabled === 'boolean') enEl.value = r.enabled ? 'true' : 'false';
+        if (r.granularity) grEl.value = r.granularity;
+        if (Number.isFinite(r.threshold_db)) thrEl.value = r.threshold_db;
+        if (Number.isFinite(r.hist_depth) && r.hist_depth >= 1) histEl.value = r.hist_depth;
+        if (Number.isFinite(r.embargo_secs)) embEl.value = r.embargo_secs;
+        if (maskEl && typeof r.mask_with_sensing === 'boolean') maskEl.value = r.mask_with_sensing ? 'true' : 'false';
+    }
+
     async function apply() {
         const cfg = {
             enabled: enEl.value === 'true',
@@ -2003,6 +2111,7 @@ void main() {
         if (!Number.isFinite(cfg.threshold_db)) cfg.threshold_db = 20.0;
         if (!Number.isFinite(cfg.hist_depth) || cfg.hist_depth < 1) cfg.hist_depth = 32;
         if (!Number.isFinite(cfg.embargo_secs) || cfg.embargo_secs < 0) cfg.embargo_secs = 9.9;
+        if (allowed) for (const k of Object.keys(cfg)) if (!allowed[k]) delete cfg[k];
         try {
             const r = await fetch('/detect/apply', {
                 method: 'POST',
@@ -2014,8 +2123,42 @@ void main() {
     }
 
     [enEl, grEl, thrEl, histEl, embEl, maskEl].filter(Boolean).forEach(el => el.addEventListener('change', apply));
-    // Push initial state on load so the dApp matches the UI after refresh.
-    apply();
+
+    // On load: grey out what the dApp cannot apply, then read its state into
+    // the controls. Never push UI defaults (a reload must not overwrite what
+    // the dApp was started with).
+    ctrlCaps.then(async caps => {
+        const sec = capsSection(caps, 'detect');
+        const sub = document.getElementById('det-sub');
+        if (!sec.supported) {
+            setDisabled(Object.values(byKey), true, sec.reason);
+            if (help) { help.textContent = sec.reason; help.style.color = 'var(--muted)'; }
+            return;
+        }
+        allowed = sec.fields || null;
+        if (allowed) {
+            for (const [k, el] of Object.entries(byKey)) {
+                const ok = allowed[k] !== false;
+                setDisabled([el], !ok, sec.reason || 'not applicable to this detector');
+            }
+        }
+        if (sub && sec.detector) {
+            sub.textContent = sec.detector + (sec.detector === 'policy' ? ' (read-only)' : '');
+        }
+        try {
+            const r = await fetch('/detect/apply', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ config: {} }),
+            }).then(x => x.json());
+            fill(r);
+            if (sec.detector === 'policy') {
+                if (help) { help.textContent = sec.reason; help.style.color = 'var(--muted)'; }
+            } else {
+                updateHelp(r);
+            }
+        } catch (_) { /* transient */ }
+    });
 })();
 
 // --- Detector mask stats: count blocked bins per indication, surface in footer ---
@@ -2171,7 +2314,15 @@ void main() {
     }
 
     el.addEventListener('change', () => send({ enabled: el.value === 'true' }));
-    send({});  // query-only on load → reflect dApp state, no side effect
+    ctrlCaps.then(caps => {
+        const sec = capsSection(caps, 'block');
+        if (!sec.supported) {
+            setDisabled([el], true, sec.reason || 'control not available');
+            if (help) { help.textContent = sec.reason || 'control not available'; help.style.color = 'var(--muted)'; }
+            return;
+        }
+        send({});  // query-only on load → reflect dApp state, no side effect
+    });
 })();
 
 // --- Visualizer view controls: freq zoom + pause (client-side only) ---
@@ -2182,6 +2333,51 @@ void main() {
     const pHelp = document.getElementById('viz-pause-help');
     const xaxis = document.getElementById('wf-xaxis');
     const N_PRBS = __N_PRBS__, SC_PER_PRB = 12, N_SC = N_PRBS * SC_PER_PRB;
+
+    // Carrier geometry for absolute frequencies (null when the dApp did not say).
+    const F_LEFT_MHZ = __F_LEFT_MHZ__, SCS_MHZ = __SCS_MHZ__;
+    const tipEl = document.getElementById('freq-tip');
+    const ticksEl = document.getElementById('wf-ticks');
+    const fmtF = f => f.toFixed(2);
+    // Frequency (MHz) of a subcarrier position (fractional index; 0 = left edge).
+    const scToMHz = sc => F_LEFT_MHZ + sc * SCS_MHZ;
+
+    function drawTicks() {
+        if (!ticksEl || F_LEFT_MHZ === null) return;
+        const unit = document.getElementById('wf-ticks-unit');
+        if (unit) unit.textContent = 'MHz';
+        ticksEl.textContent = '';
+        const lo = vizState.xMin * N_SC, hi = vizState.xMax * N_SC, n = 6;
+        for (let k = 0; k <= n; k++) {
+            const frac = k / n;
+            const span = document.createElement('span');
+            span.textContent = fmtF(scToMHz(lo + frac * (hi - lo)));
+            span.style.left = (frac * 100) + '%';
+            span.style.transform = k === 0 ? 'none' : (k === n ? 'translateX(-100%)' : 'translateX(-50%)');
+            span.style.setProperty('--tick-x', k === 0 ? '0' : (k === n ? '100%' : '50%'));
+            ticksEl.appendChild(span);
+        }
+    }
+
+    // Hover readout: PRB, subcarrier and absolute frequency under the cursor
+    // (all three plots share the same horizontal axis).
+    ['sc-waterfall', 'sc-density', 'mask-canvas'].forEach(id => {
+        const cv = document.getElementById(id);
+        if (!cv || !tipEl) return;
+        cv.addEventListener('mousemove', ev => {
+            const r = cv.getBoundingClientRect();
+            if (r.width <= 0) return;
+            const frac = Math.min(1, Math.max(0, (ev.clientX - r.left) / r.width));
+            const sc = Math.min(N_SC - 1, Math.floor((vizState.xMin + frac * (vizState.xMax - vizState.xMin)) * N_SC));
+            let txt = 'PRB ' + Math.floor(sc / SC_PER_PRB) + ' \u00b7 SC ' + sc;
+            if (F_LEFT_MHZ !== null) txt += ' \u00b7 ' + fmtF(scToMHz(sc + 0.5)) + ' MHz';
+            tipEl.textContent = txt;
+            tipEl.style.display = 'block';
+            tipEl.style.left = (ev.clientX + 12) + 'px';
+            tipEl.style.top = (ev.clientY + 14) + 'px';
+        });
+        cv.addEventListener('mouseleave', () => { tipEl.style.display = 'none'; });
+    });
 
     function applyZoom() {
         let lo = parseInt(zMin && zMin.value, 10);
@@ -2194,11 +2390,15 @@ void main() {
         vizState.xMin = (lo * SC_PER_PRB) / N_SC;
         vizState.xMax = ((hi + 1) * SC_PER_PRB) / N_SC;
         if (xaxis) {
+            const fr = F_LEFT_MHZ === null ? '' :
+                ' \u00b7 ' + fmtF(scToMHz(lo * SC_PER_PRB)) + '\u2013' + fmtF(scToMHz((hi + 1) * SC_PER_PRB)) + ' MHz' +
+                (lo === 0 && hi === N_PRBS - 1 ? ' \u00b7 centre ' + fmtF(scToMHz(N_SC / 2)) + ' MHz' : '');
             xaxis.textContent = (lo === 0 && hi === N_PRBS - 1)
-                ? 'Subcarrier Index 0..3275 (273 PRBs x 12 SCs, antenna 0)'
+                ? 'Subcarrier Index 0..' + (N_SC - 1) + ' (' + N_PRBS + ' PRBs x 12 SCs, antenna 0)' + fr
                 : ('PRB ' + lo + '..' + hi + ' (SC ' + (lo * SC_PER_PRB) + '..' +
-                   ((hi + 1) * SC_PER_PRB - 1) + ', antenna 0)');
+                   ((hi + 1) * SC_PER_PRB - 1) + ', antenna 0)' + fr);
         }
+        drawTicks();
         // Notify panels that aren't redrawn every frame (the blocked strip) to
         // re-render against the new zoom window immediately.
         window.dispatchEvent(new Event('vizzoom'));
@@ -2258,10 +2458,10 @@ void main() {
 _ctrl_lock = threading.Lock()
 _ctrl_socket = None
 _ctrl_endpoint = "tcp://localhost:5560"
-# When None, no REP server owns the control port (e.g. the Python dApp doesn't
-# bind one). We must NOT connect to 5560 then: on a shared host that is the
-# co-resident C++ dApp's REP, so a /block/apply would send a real UL+DL PRB
-# block to the gNB via the wrong agent. Disabled → routes report unavailable.
+# Disabled (--ctrl-port 0) when the dApp that spawned us has no control REP.
+# We must then not connect to a default port: on a shared host it may belong to
+# another dApp, and a /block/apply would send a real UL+DL PRB block to the
+# gNB via the wrong agent. Disabled → routes report unavailable.
 _ctrl_enabled = True
 
 
@@ -2296,6 +2496,14 @@ def _ctrl_request(payload, timeout_ms=2000):
                 pass
             _ctrl_socket = None
             return {"ok": False, "error": f"control error: {e}"}
+
+
+@app.route('/ctrl/caps', methods=['GET'])
+def ctrl_caps():
+    """What the agent behind the control port supports (see the dApp's `caps`
+    command). An agent that predates `caps` answers "unknown cmd"; the page
+    treats that as "everything available"."""
+    return jsonify(_ctrl_request({"cmd": "caps"}))
 
 
 @app.route('/record/start', methods=['POST'])
@@ -2402,11 +2610,31 @@ def insi_logo():
     return ('', 404)
 
 
+def _f_left_js():
+    """Left-edge frequency (MHz) as a JS literal, or null when the carrier
+    centre is unknown."""
+    if VIZ_CENTER_FREQ_HZ <= 0:
+        return 'null'
+    width_mhz = VIZ_NUM_PRBS * VIZ_SC_PER_PRB * VIZ_SCS_KHZ / 1000.0
+    return repr(VIZ_CENTER_FREQ_HZ / 1e6 - width_mhz / 2.0)
+
+
+def _center_label():
+    if VIZ_CENTER_FREQ_HZ <= 0:
+        return ''
+    return ' &middot; centre %.2f MHz' % (VIZ_CENTER_FREQ_HZ / 1e6)
+
+
 @app.route('/')
 def index():
     return render_template_string(
         HTML_TEMPLATE.replace('__N_STREAMS__', str(N_STREAMS))
                      .replace('__COMPRESS__', '1' if VIZ_COMPRESS else '0')
+                     .replace('__F_LEFT_MHZ__', _f_left_js())
+                     .replace('__SCS_MHZ__', repr(VIZ_SCS_KHZ / 1000.0))
+                     .replace('__CENTER_LABEL__', _center_label())
+                     .replace('__N_SC_M1__', str(VIZ_NUM_PRBS * VIZ_SC_PER_PRB - 1))
+                     .replace('__N_PRBS_M1__', str(VIZ_NUM_PRBS - 1))
                      .replace('__N_SC__', str(VIZ_NUM_PRBS * VIZ_SC_PER_PRB))
                      .replace('__N_PRBS__', str(VIZ_NUM_PRBS)))
 
@@ -2462,20 +2690,26 @@ if __name__ == '__main__':
                         help='TLS private key PEM for HTTPS (default: auto self-signed)')
     parser.add_argument('--zmq-port', type=int, default=5559, help='ZMQ subscriber port (default: 5559)')
     parser.add_argument('--ctrl-port', type=int, default=5560,
-                        help='dApp recording control port (default: 5560)')
+                        help='dApp control port (0 disables the control panels; default: 5560)')
     parser.add_argument('--ctrl-host', type=str, default='localhost',
-                        help='dApp recording control host (default: localhost)')
+                        help='dApp control host (default: localhost)')
     parser.add_argument('--num-prbs', type=int, default=VIZ_NUM_PRBS,
                         help='Active carrier PRB count; sets the grid width to '
                              'num_prbs*12 subcarriers (default: %(default)s)')
+    parser.add_argument('--center-freq', type=float, default=VIZ_CENTER_FREQ_HZ,
+                        help='Carrier centre frequency in Hz; labels the x axis in MHz '
+                             '(default: unknown, indices only)')
+    parser.add_argument('--scs-khz', type=float, default=VIZ_SCS_KHZ,
+                        help='Subcarrier spacing in kHz (default: %(default)s)')
     args = parser.parse_args()
 
     # Size the render grid to the active bandwidth before the page is served.
     VIZ_NUM_PRBS = args.num_prbs
+    VIZ_CENTER_FREQ_HZ = args.center_freq
+    VIZ_SCS_KHZ = args.scs_khz
 
-    # --ctrl-port <= 0 disables the control proxy (no REP to talk to). This is
-    # the default when the Python dApp spawns us, since it binds no REP and 5560
-    # may belong to a co-resident C++ dApp.
+    # --ctrl-port <= 0 disables the control proxy (no REP to talk to), which is
+    # what a spawning dApp passes when it has no control server of its own.
     _ctrl_enabled = args.ctrl_port > 0
     _ctrl_endpoint = f"tcp://{args.ctrl_host}:{args.ctrl_port}"
 

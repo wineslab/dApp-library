@@ -46,7 +46,55 @@ db_max|det=…|det_n=…|det_thr=…` + u8 power, plus a detection-mask frame wh
 detector has flagged PRBs); see `visualization/subcarrier_pub.py`. The render
 grid width follows the active carrier (`--num-prbs`×12 subcarriers, e.g. 1272 for
 106 PRB), so the waterfall renders on any bandwidth. Use `--external-viz` to feed
-an already-running visualizer.
+an already-running visualizer. The dApp tells it the carrier centre and
+subcarrier spacing, so the x axis is labelled in MHz (ticks above the waterfall,
+and a PRB / subcarrier / MHz readout under the cursor); without `--center-freq`
+information the axis shows indices only.
+
+## Dashboard control (protocol v1)
+
+With `--demo-gui` the dApp also serves the dashboard's control panels on a ZMQ
+REP socket, `tcp://127.0.0.1:5570` by default. `--ctrl-port N` picks another
+port, `--ctrl-port 0` turns it off. The default port is not 5560 so it never
+collides with another dApp's control port; if it is already taken the dApp warns
+and runs without control (panels greyed), whereas an explicit `--ctrl-port` that
+cannot be bound stops the dApp. With `--external-viz`, start the visualizer with
+the same `--ctrl-port` (and `--num-prbs`).
+
+Requests are one JSON object per frame with a `"cmd"`; every reply has `"ok"`
+and, on failure, `"error"`. The dashboard waits 2 s for the reply.
+
+| cmd | request | effect |
+|---|---|---|
+| `caps` | – | what this dApp supports: detector kind, per-field availability and the reason when a field is greyed out |
+| `block` | `enabled` (bool); none = query | start/stop forwarding detections to the gNB; xApp-sourced blocks stay installed |
+| `detect` | `config`: `enabled`, `granularity` (`sc`/`prb`), `threshold_db`, `hist_depth`, `embargo_secs`, `mask_with_sensing`; `{}` = query | change the active detector; all-or-nothing |
+| `viz` | `config`: `freq_gran`, `time_gran`, `agg`, `subsample_n`; `{}` = query | what the dApp publishes to the dashboard |
+| `start` / `stop` / `status` | `duration_s` (0, 86400], `notes` | SigMF recording |
+
+`mask_with_sensing` (the L1xL2 filter, `sensing_only`) masks the dashboard as well
+as the detector input: each slot's keep mask (sensing ranges and valid symbols)
+is built once and the published frame has every other cell at the floor, so the
+dashboard shows what the detector sees, slot by slot, without the UE's own
+transmissions. A slot with no sensed cell is not published.
+
+`detect` applies to the threshold detectors. Under `--policy` the policy decides
+the blocks, so only `mask_with_sensing` (the L1xL2 filter, i.e. `sensing_only`)
+can be changed; the other fields are greyed out. A static detector has no
+embargo, and its `hist_depth` is the averaging window. Granularity `prb`
+averages the 12 subcarriers of a PRB before detection and rebuilds the detector
+(history is lost); the red strip still shows the result per subcarrier. A change
+that resets the adaptive history (`hist_depth`, `granularity`) while a constant
+incumbent is already on makes that incumbent the new noise floor, so it is no
+longer detected; the adaptive floor suits bursty interference.
+
+Recording (`start`) is independent of `--save-iqs`: it writes every antenna,
+every symbol and the gNB's whole 273-PRB slot as `cf32_le`, one record per slot
+laid out `[ant][sym][prb][sc][I,Q]` (PRBs beyond the cell bandwidth are zero),
+with one annotation per slot (`sfn`, `slot`, sensing ranges, valid-symbol mask).
+A full 4-antenna slot is about 1.8 MB, so the writer runs on its own thread and
+reports `dropped` slots instead of stalling detection; `start` is refused with
+less than 2 GiB free in the log directory.
 
 ## Robustness
 

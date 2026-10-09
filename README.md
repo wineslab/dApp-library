@@ -113,6 +113,7 @@ This dApp implements a spectrum sharing use case discussed in [our paper](https:
 - `--energy-gui` - Enable the energy spectrum visualization GUI
 - `--iq-plotter-gui` - Enable the I/Q constellation plotter GUI
 - `--demo-gui` - Enable the demonstration GUI showing real-time spectrum occupancy
+- `--ctrl-port N` - Dashboard control port on loopback (default 5570 with `--demo-gui`, off otherwise; `0` disables). See `src/spectrum/README.md`, "Dashboard control"
 - `--show-controls` - Show tunable controls (sampling threshold) in the dashboard GUI. Only meaningful with `--demo-gui`
 - `--ground-truth LABEL` - Initial ground truth label written into IQ annotations (only used with `--save-iqs`). Updatable at runtime via the dashboard GUI when `--demo-gui` is also set. When no PRBs are detected the label is forced to `no_rfi` regardless of what is set
 

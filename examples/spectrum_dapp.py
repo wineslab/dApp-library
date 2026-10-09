@@ -25,6 +25,9 @@ from spectrum.policy import PolicyDetector, load_policy
 
 LOG_DIR = '/tmp/'
 
+# Not 5560: that is where a co-resident C++ dApp serves its dashboard control.
+DEFAULT_CTRL_PORT = 5570
+
 def stop_program(time_to_wait, dapp: SpectrumSharingDApp):
     time.sleep(time_to_wait)
     print(f"[INFO] Timer elapsed after {time_to_wait} seconds")
@@ -109,6 +112,12 @@ def main(args):
             f" | window: {args.average_over_frames} frames"
         )
 
+    # Dashboard control: on with --demo-gui at the default port, off otherwise.
+    # An explicit --ctrl-port that cannot be bound is fatal; the default is not.
+    ctrl_port = args.ctrl_port
+    if ctrl_port is None:
+        ctrl_port = DEFAULT_CTRL_PORT if args.demo_gui else 0
+
     dapp = SpectrumSharingDApp(
         detector=detector,
         save_iqs=args.save_iqs,
@@ -121,6 +130,8 @@ def main(args):
         viz_web_port=args.viz_web_port,
         viz_zmq_port=args.viz_zmq_port,
         external_viz=args.external_viz,
+        ctrl_port=ctrl_port,
+        ctrl_port_required=args.ctrl_port is not None and ctrl_port > 0,
         center_freq=settings['center_freq'],
         num_prbs=settings['num_prbs'],
         e_sampling=args.e,
@@ -245,6 +256,10 @@ if __name__ == "__main__":
                         help="ZMQ port the dApp publishes on / the visualizer reads (default 5559)")
     parser.add_argument('--external-viz', action='store_true', default=False,
                         help="Don't spawn the visualizer; publish to an already-running one")
+    parser.add_argument('--ctrl-port', type=int, default=None,
+                        help=f"Dashboard control port (loopback). Default {DEFAULT_CTRL_PORT} "
+                             "with --demo-gui, off otherwise; 0 disables. With --external-viz, "
+                             "point the visualizer's --ctrl-port at it.")
     parser.add_argument('--num-prbs', type=int, default=None,
                         help="Number of PRBs (default: from --ru)")
     parser.add_argument('--num-subcarrier-spacing', type=int, default=None,

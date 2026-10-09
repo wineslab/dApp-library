@@ -18,6 +18,7 @@ import asn1tools
 import jsonschema
 # np.set_printoptions(threshold=sys.maxsize)
 
+from dapp.control_server import ControlBindError, ControlServer
 from dapp.dapp import DApp
 from e3interface import latrec, sm_helpers
 from e3interface.e3_logging import dapp_logger, LOG_DIR
@@ -27,6 +28,8 @@ from spectrum.e3_ran_buffers_reader import (
     N_SC_PER_SLOT,
 )
 from spectrum.e3_l2_sensing_reader import E3L2SensingReader, SensingRange
+from spectrum.slot_recorder import SlotRecorder
+from spectrum.policy import PolicyDetector
 from spectrum.threshold_detector import (
     ThresholdDetector,
     StaticThresholdDetector,
@@ -235,6 +238,13 @@ class SpectrumSharingDApp(DApp):
     SPECTRUM_CONTROL_ID_PRB_BLOCK = 1
     SPECTRUM_CONTROL_ID_SENSING_POLICY = 2
 
+    # Gates the detection loop's contribution to the gNB block set. Decided
+    # under _prb_block_lock inside _reconcile_prb_blocks, so a dashboard
+    # toggle cannot be overtaken by a detection cycle already in flight.
+    _detect_blocks_enabled = True
+    _det_enabled = True
+    _det_prb_mode = False
+
     # Symbol mask upper bound (14-bit bitmap).
     SENSING_SYMBOL_MASK_MAX = 0x3FFF
 
@@ -269,7 +279,9 @@ class SpectrumSharingDApp(DApp):
                  front_end_sample_rate: float | None = None,
                  sensing_only: bool = True,
                  strict_sensing: bool = False,
-                 min_sensing_symbols: int = 1, **kwargs):
+                 min_sensing_symbols: int = 1,
+                 ctrl_port: int = 0, ctrl_port_required: bool = False,
+                 **kwargs):
         super().__init__(dapp_name=dapp_name, dapp_version=dapp_version, vendor=vendor,
                          e3ap_protocol_version=e3ap_protocol_version, link=link,
                          transport=transport, encoding_method=encoding_method, **kwargs)
@@ -407,7 +419,18 @@ class SpectrumSharingDApp(DApp):
             )
 
         self.control = control
+        self._detect_blocks_enabled = bool(control)
         dapp_logger.info(f"Control is {'not ' if not self.control else ''}active")
+
+        # Dashboard-driven runtime state. The detector lock serialises
+        # detector.update() (worker) against parameter changes and rebuilds
+        # (control thread).
+        self._detector_lock = threading.Lock()
+        self._det_enabled = True
+        self._det_prb_mode = False
+        self._recorder = SlotRecorder(
+            base_path=LOG_DIR, center_freq=center_freq, fp16_beta=fp16_beta,
+            subcarrier_spacing_khz=num_subcarrier_spacing)
 
         # PRB-block bookkeeping. The gNB install is REPLACE, not additive, so
         # whatever we send becomes the full gNB block set. Two independent
@@ -569,6 +592,19 @@ class SpectrumSharingDApp(DApp):
         # publishes every slot, so we cache the mask/threshold between runs.
         self._last_det_mask = None
         self._last_det_thr = None
+        # The control REP is bound before the dashboard is spawned so the
+        # dashboard is told the port that is really ours (0 when we have none).
+        self._ctrl_server = None
+        if ctrl_port:
+            try:
+                self._ctrl_server = ControlServer(
+                    int(ctrl_port), tick=self._recorder.tick)
+            except ControlBindError as exc:
+                if ctrl_port_required:
+                    raise
+                dapp_logger.warning(
+                    "%s; dashboard control disabled for this run "
+                    "(pass --ctrl-port to pick another port)", exc)
         if self.dashboard:
             from visualization.subcarrier_pub import SubcarrierPublisher
 
@@ -576,8 +612,17 @@ class SpectrumSharingDApp(DApp):
                 zmq_port=int(kwargs.get('viz_zmq_port', 5559)),
                 web_port=int(kwargs.get('viz_web_port', 5001)),
                 num_prbs=self.num_prbs,
+                center_freq=self.center_freq,
+                scs_khz=self.num_subcarrier_spacing,
                 spawn_viz=not kwargs.get('external_viz', False),
+                ctrl_port=self._ctrl_server.port if self._ctrl_server else 0,
             )
+        if self._ctrl_server is not None:
+            from spectrum.control_handlers import register_handlers
+            register_handlers(self._ctrl_server, self)
+            self._ctrl_server.start()
+            dapp_logger.info("Dashboard control listening on tcp://%s:%d",
+                             self._ctrl_server.host, self._ctrl_server.port)
 
     def _init_spectrum_encoder(self):
         """Initialize the spectrum encoder based on the encoding method"""
@@ -753,6 +798,8 @@ class SpectrumSharingDApp(DApp):
         """
         with self._prb_block_lock:
             if detect is not None:
+                if not (self._detect_blocks_enabled and self._det_enabled):
+                    detect = set()
                 self._prb_block_detect = set(detect)
             if xapp is not None:
                 self._prb_block_xapp = set(xapp)
@@ -775,6 +822,115 @@ class SpectrumSharingDApp(DApp):
             "PRB block set updated: %d PRB(s) installed (detect=%d, xApp=%d)",
             len(blocked), len(self._prb_block_detect), len(self._prb_block_xapp),
         )
+
+    def set_block_enabled(self, enabled: bool) -> bool:
+        """Start or stop forwarding detections to the gNB.
+
+        Turning it off retracts the detection contribution; xApp-sourced
+        blocks stay installed.
+        """
+        enabled = bool(enabled)
+        with self._prb_block_lock:
+            self._detect_blocks_enabled = enabled
+            self.control = enabled
+        if not enabled:
+            self._reconcile_prb_blocks(detect=set())
+        dapp_logger.info("PRB block forwarding %s", "enabled" if enabled else "disabled")
+        return enabled
+
+    def detector_kind(self) -> str:
+        det = self._detector
+        if isinstance(det, PolicyDetector):
+            return "policy"
+        if isinstance(det, AdaptiveThresholdDetector):
+            return "adaptive"
+        if isinstance(det, StaticThresholdDetector):
+            return "static"
+        return "other"
+
+    def detector_state(self) -> dict:
+        det = self._detector
+        kind = self.detector_kind()
+        hist = (det.hist_depth if kind == "adaptive"
+                else det.window if kind == "static" else 0)
+        embargo = det.embargo_timeout_secs if kind == "adaptive" else 0.0
+        return {
+            "detector": kind,
+            "enabled": self._det_enabled,
+            "granularity": "prb" if self._det_prb_mode else "sc",
+            "n_bins": self.num_prbs if self._det_prb_mode else self.fft_size,
+            "threshold_db": float(det.threshold_db),
+            "hist_depth": int(hist),
+            "embargo_secs": float(embargo),
+            "mask_with_sensing": bool(self.sensing_only),
+        }
+
+    def configure_detector(self, *, enabled=None, granularity=None,
+                           threshold_db=None, hist_depth=None,
+                           embargo_secs=None, mask_with_sensing=None) -> dict:
+        """Apply a (partial) dashboard detector config; all-or-nothing.
+
+        Everything is validated before anything is applied. Raises ValueError
+        with the reason when a field does not apply to the active detector.
+        """
+        kind = self.detector_kind()
+        detector_fields = (enabled, granularity, threshold_db, hist_depth, embargo_secs)
+        if kind in ("policy", "other") and any(v is not None for v in detector_fields):
+            raise ValueError(
+                "detector parameters do not apply: a policy decides the blocks"
+                if kind == "policy" else "detector parameters do not apply")
+        if kind == "static" and embargo_secs is not None:
+            raise ValueError("static detector has no embargo")
+        if granularity is not None and granularity not in ("sc", "prb"):
+            raise ValueError("granularity must be 'sc' or 'prb'")
+        try:
+            if threshold_db is not None:
+                threshold_db = float(threshold_db)
+            if hist_depth is not None:
+                hist_depth = int(hist_depth)
+            if embargo_secs is not None:
+                embargo_secs = float(embargo_secs)
+        except (TypeError, ValueError):
+            raise ValueError("threshold_db, hist_depth and embargo_secs must be numbers") from None
+        if hist_depth is not None and hist_depth < 1:
+            raise ValueError("hist_depth must be >= 1")
+        if embargo_secs is not None and embargo_secs < 0:
+            raise ValueError("embargo_secs must be >= 0")
+
+        with self._detector_lock:
+            if granularity is not None and (granularity == "prb") != self._det_prb_mode:
+                prb = granularity == "prb"
+                self._detector = self._detector.resized(
+                    self.num_prbs if prb else self.fft_size)
+                self._det_prb_mode = prb
+                self._last_det_mask = None
+            det = self._detector
+            if kind == "adaptive":
+                det.configure(snr_threshold_db=threshold_db,
+                              hist_depth=hist_depth,
+                              embargo_timeout_secs=embargo_secs)
+            elif kind == "static":
+                det.configure(threshold_db=threshold_db, window=hist_depth)
+            if enabled is not None:
+                self._det_enabled = bool(enabled)
+                if not enabled:
+                    self._last_det_mask = None
+        if mask_with_sensing is not None:
+            self.sensing_only = bool(mask_with_sensing)
+        if enabled is not None and not enabled:
+            self._reconcile_prb_blocks(detect=set())
+        return self.detector_state()
+
+    def _to_prb_input(self, vec: np.ndarray, keep):
+        """Collapse a per-subcarrier magnitude vector (and keep mask) to PRBs."""
+        sc = self.num_consecutive_subcarriers_for_prb
+        v = vec.reshape(self.num_prbs, sc)
+        if keep is None:
+            return v.mean(axis=1).astype(np.float32), None
+        k = keep.reshape(self.num_prbs, sc)
+        cnt = k.sum(axis=1)
+        out = (v.sum(axis=1) / np.maximum(cnt, 1)).astype(np.float32)
+        return out, cnt > 0
 
     def clear_prb_blocks(self) -> bool:
         """Unconditionally clear ALL PRB blocks on the gNB.
@@ -1483,9 +1639,9 @@ class SpectrumSharingDApp(DApp):
 
     def _read_iq_from_shm(self, p: SlotPointer):
         """Read the slot pointed to by ``p`` and return:
-          - ``(iq_symbols, iq_3d)``: list of flat float32 [I,Q,I,Q,...]
-            arrays (one per symbol of antenna 0) plus a [sym][sc][2]
-            view for diagnostics.
+          - ``(iq_symbols, iq_3d, full)``: list of flat float32 [I,Q,I,Q,...]
+            arrays (one per symbol of antenna 0), a [sym][sc][2] view for
+            diagnostics, and the whole [ant][sym][sc][2] slot (for recording).
         Returns ``None`` if the read fails (out-of-range index, shm not
         open). Antenna 0 is selected to match the legacy convention.
         """
@@ -1500,7 +1656,7 @@ class SpectrumSharingDApp(DApp):
         ant0_full = full[0]                       # [sym][sc_per_slot=3276][2]
         iq_3d = ant0_full[:, : self.ofdm_symbol_size, :]  # [sym][ofdm_symbol_size][2]
         iq_symbols = [iq_3d[s].reshape(-1).copy() for s in range(iq_3d.shape[0])]
-        return iq_symbols, iq_3d
+        return iq_symbols, iq_3d, full
 
     @override
     def _handle_indication(self, dapp_identifier: int, ran_function_id: int, data: bytes):
@@ -1616,7 +1772,7 @@ class SpectrumSharingDApp(DApp):
         if result is None:
             self._count_read_drop()
             return
-        iq_symbols, iq_3d = result
+        iq_symbols, iq_3d, full = result
         t.after_shm_ns = time.monotonic_ns()
 
         if (self._shm_indications_handled < 5
@@ -1641,6 +1797,9 @@ class SpectrumSharingDApp(DApp):
                 "[MASK] sfn=%d slot=%d ranges=%d: %s",
                 p.sfn, p.slot, len(ranges), sample,
             )
+
+        self._recorder.offer(full, p.timestamp_ns, p.sfn, p.slot, ranges,
+                             p.valid_symbol_mask)
 
         # Timestamp passed downstream — used by IQSaver annotations.
         # producer_ts_ns is monotonic-ish ns; CSV annotations store it as-is.
@@ -1751,7 +1910,36 @@ class SpectrumSharingDApp(DApp):
                     self._ind_queue_dropped, self._ind_queue.qsize(),
                 )
 
-    def _build_detector_input(self, mag_batch, ranges, valid_symbol_mask: int = 0x3FFF):
+    def _build_keep_mask(self, shape, ranges, valid_symbol_mask: int = 0x3FFF):
+        """(symbol, subcarrier) cells that were sensed this slot: inside a
+        sensing range and in a symbol the gNB marks valid. ``None`` when no
+        cell qualifies. Built once per slot and shared by the detector input
+        and the dashboard frame, so both show the same cells."""
+        if not ranges:
+            return None
+        n_sym, n_sc = shape
+        keep = np.zeros((n_sym, n_sc), dtype=bool)
+        for r in ranges:
+            if r.num_symbols <= 0 or r.rb_size <= 0:
+                continue
+            sym_lo = max(0, r.start_symbol)
+            sym_hi = min(n_sym, r.start_symbol + r.num_symbols)
+            sc_lo  = max(0, r.rb_start * self.num_consecutive_subcarriers_for_prb)
+            sc_hi  = min(
+                n_sc,
+                (r.rb_start + r.rb_size) * self.num_consecutive_subcarriers_for_prb,
+            )
+            if sym_lo >= sym_hi or sc_lo >= sc_hi:
+                continue
+            keep[sym_lo:sym_hi, sc_lo:sc_hi] = True
+        # DL and guard symbols of a mixed slot hold the gNB's own TX leakage.
+        for sym in range(n_sym):
+            if not (valid_symbol_mask >> sym) & 1:
+                keep[sym] = False
+        return keep if keep.any() else None
+
+    def _build_detector_input(self, mag_batch, ranges, valid_symbol_mask: int = 0x3FFF,
+                              keep=None):
         """Per-PRB magnitude vector that the threshold detector should
         learn from when sensing_only is on. Builds the same 2D keep mask
         as the dashboard filter, then collapses kept cells per-PRB
@@ -1773,28 +1961,9 @@ class SpectrumSharingDApp(DApp):
         PRB-blacklist control path and the dApp would happily blacklist
         the UE's own PUSCH allocation.
         """
-        if not ranges:
-            return None
-        n_sym, n_sc = mag_batch.shape
-        keep = np.zeros((n_sym, n_sc), dtype=bool)
-        for r in ranges:
-            if r.num_symbols <= 0 or r.rb_size <= 0:
-                continue
-            sym_lo = max(0, r.start_symbol)
-            sym_hi = min(n_sym, r.start_symbol + r.num_symbols)
-            sc_lo  = max(0, r.rb_start * self.num_consecutive_subcarriers_for_prb)
-            sc_hi  = min(
-                n_sc,
-                (r.rb_start + r.rb_size) * self.num_consecutive_subcarriers_for_prb,
-            )
-            if sym_lo >= sym_hi or sc_lo >= sc_hi:
-                continue
-            keep[sym_lo:sym_hi, sc_lo:sc_hi] = True
-        # DL and guard symbols of a mixed slot hold the gNB's own TX leakage.
-        for sym in range(n_sym):
-            if not (valid_symbol_mask >> sym) & 1:
-                keep[sym] = False
-        if not keep.any():
+        if keep is None:
+            keep = self._build_keep_mask(mag_batch.shape, ranges, valid_symbol_mask)
+        if keep is None:
             return None
         # Per-PRB-column mean over kept symbols. Columns where no symbol
         # was kept are zeroed (the per-column denominator drops the
@@ -1840,10 +2009,18 @@ class SpectrumSharingDApp(DApp):
 
         if self.iqPlotterGui:
             self.iq_queue.put(last_iq_arr)
-        if self.dashboard:
-            self.demo.publish_slot(mag_batch, sfn, slot,
-                                   blocked=self._last_det_mask,
-                                   det_thr=self._last_det_thr)
+        # With the L1xL2 filter on, the dashboard shows what the detector sees:
+        # the sensed cells of THIS slot, everything else at the floor. The mask
+        # is built per slot (not per detector run), so every published frame is
+        # masked with its own ranges whatever the detector decimation. A slot
+        # with no sensed cell has nothing to show and is not published, as the
+        # detector skips it too.
+        keep = (self._build_keep_mask(mag_batch.shape, ranges, valid_symbol_mask)
+                if self.sensing_only else None)
+        if self.dashboard and (not self.sensing_only or keep is not None):
+            self.demo.publish_slot(
+                mag_batch if keep is None else np.where(keep, mag_batch, 0.0),
+                sfn, slot, blocked=self._last_det_mask, det_thr=self._last_det_thr)
         if self.save_iqs:
             with self._sample_idx_lock:
                 self.sample_idx = self.iq_saver.save_samples(last_iq_arr, timestamp=timestamp)
@@ -1873,6 +2050,9 @@ class SpectrumSharingDApp(DApp):
             self._record_latency(t)
             return
         self._detector_run_counter = 0
+        if not self._det_enabled:
+            self._record_latency(t)
+            return
 
         # /e3_ran_buffers is already in natural PRB×SC order (no FFT-shift
         # wraparound), so first_carrier_offset is 0 and abs_shifted is just
@@ -1903,7 +2083,8 @@ class SpectrumSharingDApp(DApp):
                 # the detector entirely and preserve prior state.
                 self._record_latency(t)
                 return
-            det_input = self._build_detector_input(mag_batch, ranges, valid_symbol_mask)
+            det_input = self._build_detector_input(
+                mag_batch, ranges, valid_symbol_mask, keep=keep)
             if det_input is None:
                 # No sensing-window cells in this slot — don't let the
                 # detector learn this update at all (preserves prior state).
@@ -1917,8 +2098,19 @@ class SpectrumSharingDApp(DApp):
 
         # Detection (strategy-agnostic). det_col_keep (when set) excludes
         # zeroed out-of-window columns from the adaptive noise-floor history.
-        ready, blocked, power_db, noise_floor_db = self._detector.update(
-            abs_shifted, now, det_col_keep)
+        with self._detector_lock:
+            det_in, det_keep = abs_shifted, det_col_keep
+            if self._det_prb_mode:
+                det_in, det_keep = self._to_prb_input(abs_shifted, det_col_keep)
+            ready, blocked, power_db, noise_floor_db = self._detector.update(
+                det_in, now, det_keep)
+            if ready and self._det_prb_mode:
+                rep_n = self.num_consecutive_subcarriers_for_prb
+                blocked = np.repeat(blocked, rep_n)
+                if power_db is not None:
+                    power_db = np.repeat(power_db, rep_n)
+                if noise_floor_db is not None:
+                    noise_floor_db = np.repeat(noise_floor_db, rep_n)
 
         if not ready:
             return
@@ -2147,6 +2339,9 @@ class SpectrumSharingDApp(DApp):
                 f"{self._ind_queue_dropped} entries total"
             )
 
+        if self._ctrl_server is not None:
+            self._ctrl_server.stop()
+        self._recorder.close()
         if self.save_iqs:
             self.iq_saver.close()
         if self.dashboard:
