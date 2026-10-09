@@ -21,6 +21,7 @@ from spectrum.ru_profiles import (
     uncalibrated_keys,
 )
 from spectrum.threshold_detector import StaticThresholdDetector, AdaptiveThresholdDetector
+from spectrum.policy import PolicyDetector, load_policy
 
 LOG_DIR = '/tmp/'
 
@@ -56,6 +57,8 @@ def main(args):
     uncalibrated = [
         key for key in uncalibrated_keys(args.ru)
         if getattr(args, key, None) is None
+        # a --policy decides the blacklist itself; the threshold is not used
+        and not (args.policy and key == 'noise_floor_threshold')
     ]
     if uncalibrated:
         print(f"[WARNING] Profile '{args.ru}' has no calibrated value for "
@@ -65,7 +68,8 @@ def main(args):
     # carefully calibrated.
     noise_floor_threshold = settings['noise_floor_threshold']
 
-    print(f'Threshold is {noise_floor_threshold}')
+    if not args.policy:
+        print(f'Threshold is {noise_floor_threshold}')
 
     # ------------------------------------------------------------------
     # Build the detection strategy explicitly so the example is the
@@ -73,7 +77,14 @@ def main(args):
     # ------------------------------------------------------------------
     fft_size = compute_fft_size(settings['num_prbs'], args.e)
 
-    if args.use_adaptive_noise_floor:
+    if args.policy:
+        detector = PolicyDetector(
+            load_policy(args.policy),
+            fft_size=fft_size,
+            num_prbs=settings['num_prbs'],
+        )
+        print(f"[INFO] Detector: PolicyDetector | policy: {args.policy}")
+    elif args.use_adaptive_noise_floor:
         detector = AdaptiveThresholdDetector(
             snr_threshold_db=noise_floor_threshold,
             fft_size=fft_size,
@@ -299,6 +310,11 @@ if __name__ == "__main__":
                              "the cost of dashboard freezes under load). Set to 14 to "
                              "require fully-clean slots (equivalent to "
                              "--strict-sensing).")
+
+    parser.add_argument('--policy', type=str, default=None, metavar='MODULE:CLASS',
+                        help="Decide the PRB blacklist with a spectrum.policy.Policy subclass "
+                             "(e.g. examples.hackathon_policy:MyPolicy) instead of a threshold "
+                             "detector. Overrides --use-adaptive-noise-floor.")
 
     # --- Optional sensing-policy toggle ----------------------------- #
     # Drives the gNB's masked UL TDA selector via spectrum_sm ctrl_id=2.
