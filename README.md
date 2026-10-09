@@ -4,21 +4,24 @@ A complete tutorial on how to deploy a dApp can be found on the [OpenRAN Gym web
 
 ## Installation
 
-### Prerequisite: libe3 Python bindings (`libe3py`)
+### Prerequisite: libe3
 
 All **E3AP** operations (transport, setup handshake, subscribe, indication/control
 framing, and the ASN.1/JSON/Protobuf wire encoding) are handled by
 [**libe3**](https://github.com/wineslab/libe3); this library keeps only the
 **E3SM** (service-model) encode/decode in Python — the same split OAI uses on the
-RAN side. You must therefore install libe3 with its Python bindings **into the
-same interpreter/venv** that runs the dApp, *before* installing this package:
+RAN side. Install libe3 once, like any other library (it asks for `sudo`), at the
+same version as the `libe3py` this package pulls in:
 
 ```bash
-cd ~/libe3
-./build_libe3 --install --enable-swig \
-  --cmake-opt "-DLIBE3_ENABLE_ASN1=ON -DLIBE3_ENABLE_JSON=ON"
-python3 -c "import libe3py; print('libe3py OK')"
+git clone --branch 0.2.3 https://github.com/wineslab/libe3 && cd libe3
+./build_libe3 -I                          # build dependencies, once
+./build_libe3 --all-encodings --install   # -> /usr/local
 ```
+
+Its Python binding, `libe3py`, is a dependency of this package: pip builds it
+against the installed libe3 when you install the dApp library, in any virtual
+environment and without `sudo`.
 
 The dApp's `--link` / `--transport` / `--encoding` must match the gNB's
 `E3Configuration`. See [libe3's `swig/README.md`](https://github.com/wineslab/libe3/blob/main/swig/README.md)
@@ -26,8 +29,9 @@ for the binding architecture.
 
 #### Latency recording (optional)
 
-Per-stage latency records (latrec) come from libe3 itself: build the bindings with
-`--cmake-opt "-DLIBE3_ENABLE_LATREC=ON"` and the dApp stamps its E3SM decode,
+Per-stage latency records (latrec) come from libe3 itself: install libe3 with
+`--cmake-opt "-DLIBE3_ENABLE_LATREC=ON"`, then rebuild the binding
+(`pip install --force-reinstall --no-cache-dir libe3py`), and the dApp stamps its E3SM decode,
 processing, output creation, E3SM encode and xApp-policy apply stages into libe3's
 rings, joinable with libe3's own by `tools/latrec2csv.py`. There is no runtime
 switch; against a binding built without it every stamp is a no-op. See libe3's

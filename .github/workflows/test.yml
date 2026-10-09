@@ -20,7 +20,16 @@ jobs:
       - name: Install build prerequisites
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake swig nlohmann-json3-dev
+          sudo apt-get install -y cmake swig nlohmann-json3-dev libzmq3-dev libprotobuf-dev protobuf-compiler
+
+      # libe3py (a dependency) is built against an installed libe3 of the same version.
+      - name: Install libe3
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ver=$(python3 -c "import re; print(re.search(r'libe3py>=([0-9.]+)', open('pyproject.toml').read()).group(1))")
+          gh release download "$ver" --repo wineslab/libe3 --pattern "libe3_${ver}_amd64.deb" --dir "$RUNNER_TEMP"
+          sudo apt-get install -y "$RUNNER_TEMP/libe3_${ver}_amd64.deb"
 
       - name: Install package (editable, with test deps)
         run: pip install -e ".[all]" pytest

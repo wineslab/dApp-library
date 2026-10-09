@@ -8,12 +8,10 @@ drives. Service-model (E3SM) payloads stay opaque here as ``bytes`` and are
 encoded/decoded in the dApp subclasses (spectrum/simple), mirroring the OAI
 split where libe3 handles E3AP and the SM handles encode/decode.
 
-``libe3py`` is provided by installing libe3 with the SWIG bindings enabled::
+``libe3py`` comes from PyPI (a dependency of this package) and is built against
+the libe3 installed on the machine; install libe3 once first::
 
-    ./build_libe3 --install --enable-swig \
-        --cmake-opt "-DLIBE3_ENABLE_ASN1=ON -DLIBE3_ENABLE_JSON=ON"
-
-Import it into the same interpreter/venv that runs the dApp.
+    ./build_libe3 --all-encodings --install
 """
 
 from __future__ import annotations
@@ -64,13 +62,15 @@ def _libe3py_is_current() -> bool:
 LIBE3PY_USABLE = LIBE3PY_AVAILABLE and _libe3py_is_current()
 
 _BUILD_CMD = (
-    "  cd ~/libe3 && ./build_libe3 --install --enable-swig "
-    '--cmake-opt "-DLIBE3_ENABLE_ASN1=ON -DLIBE3_ENABLE_JSON=ON"'
+    "  # once, in a libe3 checkout of the same version (https://github.com/wineslab/libe3):\n"
+    "  ./build_libe3 -I && ./build_libe3 --all-encodings --install\n"
+    "  # then, in this environment:\n"
+    "  pip install --force-reinstall --no-cache-dir libe3py"
 )
 
 _IMPORT_HINT = (
-    "libe3py is not importable. Build and install the libe3 Python bindings "
-    "into this environment:\n" + _BUILD_CMD
+    "libe3py is not importable. Install libe3, then its Python binding into "
+    "this environment:\n" + _BUILD_CMD
 )
 
 _VERSION_HINT = (
@@ -78,7 +78,7 @@ _VERSION_HINT = (
     "E3Event.sequence_id). That release made the correlation id a mandatory "
     "argument of DAppSession.send_report(), so this binding cannot complete "
     "the E3 setup handshake against a matching gNB -- the run fails with "
-    "'RAN refused Setup'. Rebuild and reinstall the bindings:\n" + _BUILD_CMD
+    "'RAN refused Setup'. Install libe3 and libe3py of the 0.2 series:\n" + _BUILD_CMD
 )
 
 # ErrorCode.SUCCESS is 0 in libe3.

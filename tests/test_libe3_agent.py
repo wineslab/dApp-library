@@ -2,7 +2,7 @@
 """Smoke tests for the libe3-backed E3AP layer.
 
 Skipped automatically if libe3py is not installed in this environment
-(build it with `./build_libe3 --install --enable-swig`).
+(`pip install libe3py`, after installing libe3).
 """
 import os
 import sys
@@ -17,7 +17,7 @@ Libe3Agent = libe3_agent.Libe3Agent
 
 pytestmark = pytest.mark.skipif(
     not libe3_agent.LIBE3PY_AVAILABLE,
-    reason="libe3py not installed; build with build_libe3 --install --enable-swig",
+    reason="libe3py not installed; install libe3, then pip install libe3py",
 )
 
 
