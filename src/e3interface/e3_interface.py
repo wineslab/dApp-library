@@ -90,6 +90,9 @@ class E3Interface:
             # Guards the three callback dicts above: caller-thread add_/remove_*
             # vs. inbound-thread iteration in the _handle_* dispatchers.
             self._callback_lock = threading.Lock()
+            # Source of the report correlation ids (see schedule_report).
+            self._report_seq = 0
+            self._report_seq_lock = threading.Lock()
             self.stop_event = threading.Event()
             # Subscription-response correlation. The wire is fire-and-forget, so a
             # queued request is NOT an accepted one — a queue put() succeeding
@@ -336,7 +339,7 @@ class E3Interface:
                         case "report":
                             rc = self.agent.send_report(
                                 data["ranFunctionId"], data["reportData"],
-                                data.get("sequenceId", 0))
+                                data["sequenceId"])
                         case "release":
                             rc = self.agent.release()
                         case _:
@@ -467,12 +470,28 @@ class E3Interface:
             'latSeq': latrec.ctx(),
         }))
 
-    def schedule_report(self, dappId: int, ranFunctionId: int, reportData: bytes):
+    def _next_report_sequence_id(self) -> int:
+        """Next correlation id for a report: 1..4294967295, wrapping to 1 (0 is not a valid id)."""
+        with self._report_seq_lock:
+            self._report_seq = self._report_seq % 0xFFFFFFFF + 1
+            return self._report_seq
+
+    def schedule_report(self, dappId: int, ranFunctionId: int, reportData: bytes,
+                        sequenceId: int = 0) -> int:
+        """Queue a report and return its correlation id.
+
+        The id is mandatory on the wire (E3-SequenceID, 1..4294967295) and travels on to the
+        xApp. Pass the one you want, or leave it at 0 to get the next one from this interface.
+        """
+        if not sequenceId:
+            sequenceId = self._next_report_sequence_id()
         self.outbound_queue.put(('report', {
             'ranFunctionId': ranFunctionId,
             'reportData': reportData,
+            'sequenceId': sequenceId,
             'latSeq': latrec.ctx(),
         }))
+        return sequenceId
 
     def add_subscription_callback(self, dapp_id: int, callback):
         with self._callback_lock:

@@ -3,7 +3,8 @@
 A policy decides which PRBs the gNB must stop using. The dApp feeds it one
 :class:`Observation` per detector run and sends the PRB blacklist it returns.
 Everything else (E3 connection, subscriptions, DC-leakage guard, control
-reconciliation and rate limiting) stays in :class:`spectrum.spectrum_dapp.SpectrumSharingDApp`.
+reconciliation, which sends a control only when the set changed) stays in
+:class:`spectrum.spectrum_dapp.SpectrumSharingDApp`.
 
 Write a policy by subclassing :class:`Policy`::
 
@@ -62,9 +63,9 @@ class Observation:
 class Policy(ABC):
     """Base class of a PRB-blocking policy.
 
-    The dApp calls :meth:`update` once per observation (roughly every 20 ms with the
-    default gNB settings). It returns the set of PRB indices to block; PRBs that are
-    not returned are released. State between calls lives on ``self``;
+    The dApp calls :meth:`update` once per observation (every few milliseconds, about
+    6.7 ms nominal, depending on how fast the gNB runs). It returns the set of PRB
+    indices to block; PRBs that are not returned are released. State between calls lives on ``self``;
     ``self.history`` holds the last ``history_len`` observations, the current one last.
     """
 

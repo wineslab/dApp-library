@@ -755,11 +755,11 @@ class SpectrumSharingDApp(DApp):
         Spectrum-DAppControlData envelope.
 
         Drives the gNB's per-MAC prb_block_state_t via set_prb_block_mask():
-        each PRB in ``blocked_prbs`` gets every UL symbol marked occupied,
-        so downstream scheduling treats it as unavailable.
+        each PRB in ``blocked_prbs`` gets every UL symbol marked occupied and is
+        withheld from DL scheduling too, so the gNB uses it in neither direction.
 
         Args:
-            blocked_prbs: List of PRB indices to block on the UL
+            blocked_prbs: List of PRB indices to block (UL and DL)
             update_sampling: Whether to include the updated sampling threshold
             validity_period: How long this block is valid in seconds (optional)
 
@@ -1747,10 +1747,10 @@ class SpectrumSharingDApp(DApp):
         # mask-of-slot-N applied to IQ-of-slot-N+k → UE energy bleeding
         # into "sensing" cells.
         #
-        # Threshold matches the gNB ring TTL: 64 rows × 2 buffers = 128
-        # slots × ~0.5 ms/slot at 30 kHz SCS ≈ 64 ms safety budget. We use
-        # 50 ms as a conservative cutoff. If breached, treat the IQ as
-        # untrustworthy and skip the slot.
+        # The bound comes from the ring depth in the shm header (see
+        # _shm_staleness_ns): 16 rows × 2 buffers = 32 slots × 0.5 ms/slot at
+        # 30 kHz SCS = 16 ms. Until the header is read a fixed 50 ms is used.
+        # If breached, treat the IQ as untrustworthy and skip the slot.
         if p.timestamp_ns > 0:
             lag_ns = t.recv_ns - p.timestamp_ns
             stale_ns = self._shm_staleness_ns()

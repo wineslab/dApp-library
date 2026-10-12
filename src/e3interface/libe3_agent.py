@@ -247,7 +247,7 @@ class Libe3Agent:
     ) -> int:
         """Send a subscribe request.
 
-        Returns the assigned request id (a positive int, 1..1000) on success —
+        Returns the assigned request id (a positive int) on success —
         so the caller can correlate the SubscriptionResponse (which echoes
         ``request_id``) back to this call — or a negative libe3 ErrorCode on
         failure.
@@ -275,11 +275,12 @@ class Libe3Agent:
         return self._session.send_control(int(ran_function_id), int(control_id), bytes(action_data),
                                           int(sequence_id))
 
-    def send_report(self, ran_function_id: int, report_data: bytes, sequence_id: int = 0) -> int:
+    def send_report(self, ran_function_id: int, report_data: bytes, sequence_id: int) -> int:
         """Send a report to the RAN.
 
         ``sequence_id`` is the correlation id this dApp assigns to the detection;
-        it travels to the xApp on the resulting E2 indication. 0 means unset.
+        it travels to the xApp on the resulting E2 indication. It is mandatory on the
+        wire (1..4294967295); 0 is not valid and is refused with a negative ErrorCode.
         """
         return self._session.send_report(int(ran_function_id), bytes(report_data), int(sequence_id))
 

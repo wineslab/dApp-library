@@ -47,6 +47,8 @@ def _iface():
     iface.subscription_callbacks = {}
     iface.xapp_control_callbacks = {}
     iface._callback_lock = threading.Lock()
+    iface._report_seq = 0
+    iface._report_seq_lock = threading.Lock()
     iface.stop_event = threading.Event()
     iface.outbound_queue = queue.Queue()
     return iface

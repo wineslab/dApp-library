@@ -42,7 +42,7 @@ def _drain(rc, msg, data, caplog):
 
 
 CONTROL = {"ranFunctionId": 1, "controlId": 1, "actionData": b"x"}
-REPORT = {"ranFunctionId": 1, "reportData": b"x"}
+REPORT = {"ranFunctionId": 1, "reportData": b"x", "sequenceId": 1}
 
 
 @pytest.mark.parametrize("msg,data", [("control", CONTROL), ("report", REPORT)])
