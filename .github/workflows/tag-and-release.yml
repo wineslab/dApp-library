@@ -7,7 +7,7 @@ on:
 
 jobs:
   create-tag:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.get_version.outputs.version }}
       tag_created: ${{ steps.set_output.outputs.tag_created }}
@@ -50,7 +50,7 @@ jobs:
 
   build:
     name: Build distribution 📦
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: create-tag
     if: ${{ needs.create-tag.outputs.tag_created == 'true' && github.repository == 'wineslab/dApp-library' }}
     steps:
@@ -60,7 +60,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
-          python-version: "3.8"
+          python-version: "3.12"
       - name: Install pypa/build
         run: python3 -m pip install build --user
       - name: Build a source tarball (sdist)
@@ -82,7 +82,7 @@ jobs:
     needs: 
       - build
       - create-tag
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: ${{ needs.create-tag.outputs.tag_created == 'true' && github.repository == 'wineslab/dApp-library' }}
     environment:
       name: pypi
@@ -103,7 +103,7 @@ jobs:
     needs: 
       - publish-to-pypi
       - create-tag
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: ${{ needs.create-tag.outputs.tag_created == 'true' && github.repository == 'wineslab/dApp-library' }}
     permissions:
       contents: write
@@ -133,7 +133,7 @@ jobs:
     needs: 
       - publish-to-pypi
       - create-tag
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: ${{ needs.create-tag.outputs.tag_created == 'true' && github.repository == 'wineslab/dApp-library' }}
     environment:
       name: testpypi
