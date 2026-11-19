@@ -94,6 +94,10 @@ EVENT_SUBSCRIPTION_RESPONSE = 3
 EVENT_SETUP_RESPONSE = 4
 EVENT_MESSAGE_ACK = 5
 
+# E3AP refusal cause the dApp acts on: the same value as libe3's Cause enum (types.hpp),
+# a stable wire value. A telemetry or control id the RAN function does not advertise.
+CAUSE_UNSUPPORTED_IDENTIFIER = 6
+
 
 def _enum_maps():
     """Build the string->libe3py-enum maps (requires libe3py)."""

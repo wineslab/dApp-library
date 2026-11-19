@@ -1289,9 +1289,21 @@ class SpectrumSharingDApp(DApp):
         # one (the queue put() above says nothing about the RAN). Without RF=1
         # the sensing cache stays empty forever and controls are dropped
         # gNB-side; without RF=2 no IQ ever arrives. Either failure is fatal.
+        requested = {
+            self.RAN_FUNCTION_ID: (self.TELEMETRY_ID, self.CONTROL_ID),
+            self.PRB_CONTROL_RAN_FUNCTION_ID: (
+                [self.SPECTRUM_TELEMETRY_ID_SENSING],
+                [self.SPECTRUM_CONTROL_ID_PRB_BLOCK, self.SPECTRUM_CONTROL_ID_SENSING_POLICY]),
+        }
         for rf, name in ((self.RAN_FUNCTION_ID, "L1-KPM"),
                          (self.PRB_CONTROL_RAN_FUNCTION_ID, "Spectrum")):
             verdict = self.e3_interface.wait_for_subscription_result(rf, timeout=5.0)
+            if verdict is False:
+                # A control the RAN function does not offer is not worth giving up the
+                # telemetry for: disable it and subscribe again without it.
+                telemetry_ids, control_ids = requested[rf]
+                verdict = self.retry_without_refused_controls(
+                    rf, telemetry_ids, control_ids, subscriptionTime, periodicity)
             if verdict is not True:
                 reason = ("rejected by the gNB" if verdict is False
                           else "no SubscriptionResponse within 5s")

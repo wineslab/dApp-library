@@ -19,14 +19,8 @@ classifiers = [
 ]
 license = "Apache-2.0"
 license-files = ["LICENSE"]
-# E3AP transport is libe3's Python binding, `libe3py` (on PyPI). pip builds it
-# against the libe3 installed on the machine, which must be the same version:
-# install libe3 once first (`./build_libe3 --all-encodings --install`, see
-# https://github.com/wineslab/libe3). The 0.2 series is required: 0.2.0 made the
-# correlation id a mandatory argument of DAppSession.send_report().
-# (asn1tools is still required for the in-Python service-model codecs.)
 dependencies = [
-    "libe3py>=0.2.3,<0.3",
+    "libe3py>=0.4.3,<0.5",
     "asn1tools",
     "typing_extensions",
     "numpy",

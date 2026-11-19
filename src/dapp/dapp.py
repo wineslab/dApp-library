@@ -10,6 +10,7 @@ from abc import ABC, abstractmethod
 import threading
 import time
 from e3interface.e3_interface import E3Interface
+from e3interface.libe3_agent import CAUSE_UNSUPPORTED_IDENTIFIER
 from e3interface.e3_logging import dapp_logger
 
 class DApp(ABC):
@@ -19,6 +20,10 @@ class DApp(ABC):
     RAN_FUNCTION_ID = 0
     TELEMETRY_ID = []
     CONTROL_ID = []
+
+    # RAN function id -> the control ids it advertised in the setup response. Set by
+    # setup_connection(); empty until then.
+    ran_function_controls: dict[int, set[int]] = {}
     
     def __init__(self, dapp_name: str = "Unknown dApp", dapp_version: str = "0.0.0", 
                  vendor: str = "Unknown", e3ap_protocol_version: str = "1.0.0",
@@ -58,6 +63,10 @@ class DApp(ABC):
             if outcome:
                 dapp_logger.debug(f'E3 Setup Response: {response}')
                 self.dapp_id = response['dAppIdentifier']
+                self.ran_function_controls = {
+                    rf['ranFunctionIdentifier']: set(rf.get('controlIdentifierList') or [])
+                    for rf in response.get('ranFunctionList') or []
+                }
                 self.e3_interface.setup_connections()
                 return outcome, response
             
@@ -118,11 +127,54 @@ class DApp(ABC):
         # TODO this logic should become more smart to handle contract and subscriptions more granuarly
         if response_code == 'positive':
             dapp_logger.info("Positive subscription response, registering indication callback.")
+            periodicity = data.get('periodicity')
+            if periodicity is None:
+                dapp_logger.info("Subscription periodicity not reported by the RAN")
+            else:
+                dapp_logger.info(
+                    f"The RAN keeps at least {periodicity} us between indications")
             subscription_id = data['subscriptionId']
             self.e3_interface.add_indication_callback(self.dapp_id, subscription_id, self._handle_indication)
             self.e3_interface.add_xapp_control_callback(self.dapp_id, subscription_id, self._handle_xapp_control)
         else:
             dapp_logger.warning(f"Subscription response not positive: {data}")
+
+    def retry_without_refused_controls(self, ran_function_id: int, telemetry_ids: list[int],
+                                       control_ids: list[int], subscription_time: int | None = None,
+                                       periodicity: int | None = None, timeout: float = 5.0):
+        """After the RAN refused a subscription: drop the controls it does not offer, ask again.
+
+        A libe3 RAN refuses a subscription that names a control id its RAN function does not
+        advertise (cause ``unsupportedIdentifier``). The control is then disabled for this dApp,
+        so a later :meth:`E3Interface.schedule_control` for it is skipped instead of sent, and the
+        subscription is repeated with the controls that remain.
+
+        Returns the verdict of the new subscription (True accepted, False refused, None no
+        response in ``timeout``), or False without asking again when the refusal is not about
+        controls: another cause, a telemetry id, or nothing left to subscribe to.
+        """
+        refusal = self.e3_interface.subscription_refusal(ran_function_id) or {}
+        cause = refusal.get('cause')
+        advertised = self.ran_function_controls.get(ran_function_id)
+        refused = [c for c in control_ids if advertised is not None and c not in advertised]
+        # A cause of None is a RAN that gave none (Aerial) or an older libe3py: the
+        # advertised ids still tell which controls cannot be the reason.
+        if not refused or cause not in (None, CAUSE_UNSUPPORTED_IDENTIFIER):
+            return False
+        for control_id in refused:
+            self.e3_interface.disable_control(ran_function_id, control_id)
+        dapp_logger.warning(
+            f"RAN function {ran_function_id} does not offer control(s) {refused}"
+            f"{': ' + refusal['detail'] if refusal.get('detail') else ''}; "
+            f"disabled, subscribing again without them")
+        remaining = [c for c in control_ids if c not in refused]
+        if not remaining and not telemetry_ids:
+            return False
+        if not self.e3_interface.send_subscription_request(
+                self.dapp_id, ran_function_id, telemetry_ids, remaining,
+                subscription_time, periodicity):
+            return False
+        return self.e3_interface.wait_for_subscription_result(ran_function_id, timeout=timeout)
 
     def send_subscription_request(self, subscriptionTime: int | None = None, periodicity: int | None = None) -> bool:
         self.e3_interface.add_subscription_callback(self.dapp_id, self.manage_subscription_response)

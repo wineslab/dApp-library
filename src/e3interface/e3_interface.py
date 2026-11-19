@@ -73,6 +73,13 @@ class E3Interface:
                 cls._instance = super(E3Interface, cls).__new__(cls)
         return cls._instance
 
+    # ranFunctionId -> {'cause': int | None, 'detail': str | None} of the last refusal.
+    # Replaced as a whole under _sub_cv, never mutated in place.
+    _sub_refusals: dict = {}
+    # (ranFunctionId, controlId) pairs the dApp stopped using because the RAN refused them.
+    # Replaced as a whole, never mutated in place.
+    _disabled_controls: frozenset = frozenset()
+
     def __init__(self, *args, link: str = "zmq", transport: str = "ipc",
                  encoding: str = "asn1", **kwargs):
         """Initialise the interface.
@@ -189,6 +196,7 @@ class E3Interface:
         with self._sub_cv:
             self._sub_pending_rfs.add(ranFunctionId)
             self._sub_results.pop(ranFunctionId, None)
+            self._sub_refusals = {k: v for k, v in self._sub_refusals.items() if k != ranFunctionId}
         try:
             self.outbound_queue.put(('subscription', {
                 'ranFunctionId': ranFunctionId,
@@ -224,6 +232,24 @@ class E3Interface:
                     return None
                 self._sub_cv.wait(remaining)
             return self._sub_results[ran_function_id]
+
+    def subscription_refusal(self, ran_function_id: int):
+        """Why the RAN refused the last subscription to ``ran_function_id``.
+
+        ``{'cause': int | None, 'detail': str | None}``, or None when the last answer was
+        not a refusal. ``cause`` is a libe3 Cause value (``CAUSE_UNSUPPORTED_IDENTIFIER`` for a
+        telemetry or control id the function does not offer); None when the RAN gave none or
+        libe3py is older than 0.4.3.
+        """
+        with self._sub_cv:
+            return self._sub_refusals.get(ran_function_id)
+
+    def disable_control(self, ran_function_id: int, control_id: int) -> None:
+        """Stop sending ``control_id`` to ``ran_function_id``: the RAN does not offer it."""
+        self._disabled_controls = self._disabled_controls | {(ran_function_id, control_id)}
+
+    def control_disabled(self, ran_function_id: int, control_id: int) -> bool:
+        return (ran_function_id, control_id) in self._disabled_controls
 
     def send_message_ack(self, requestId: int, responseCode: str = "positive"):
         """Queue a message acknowledgment."""
@@ -273,12 +299,8 @@ class E3Interface:
                                 ev.dapp_id, ev.ran_function_id, ev.get_payload(),
                                 ev.sequence_id)
                         elif kind == EVENT_SUBSCRIPTION_RESPONSE:
-                            self._handle_subscription_response({
-                                'dAppIdentifier': ev.dapp_id,
-                                'responseCode': 'positive' if ev.response_code == 0 else 'negative',
-                                'subscriptionId': ev.subscription_id,
-                                'requestId': ev.request_id,
-                            })
+                            self._handle_subscription_response(
+                                self._subscription_response_data(ev))
                         elif kind == EVENT_MESSAGE_ACK:
                             e3_logger.debug(
                                 "Received message ACK: request=%s rc=%s",
@@ -383,6 +405,25 @@ class E3Interface:
                 self._sub_cv.notify_all()
                 e3_logger.error("libe3 subscribe send failed for RF %s (ErrorCode=%s)", rf, ret)
 
+    @staticmethod
+    def _subscription_response_data(ev):
+        """The dict a subscription callback receives for a SubscriptionResponse event.
+
+        ``periodicity`` is the least time, in microseconds, the RAN keeps between two
+        indications of the subscription (libe3 0.4.3 and later), or None when the RAN
+        did not say; libe3py reports that as -1. None does not mean "no limit".
+        """
+        return {
+            'dAppIdentifier': ev.dapp_id,
+            'responseCode': 'positive' if ev.response_code == 0 else 'negative',
+            'subscriptionId': ev.subscription_id,
+            'requestId': ev.request_id,
+            'periodicity': None if ev.periodicity < 0 else ev.periodicity,
+            # Why a negative response was refused (libe3py 0.4.3 and later; None before).
+            'cause': (lambda c: None if c < 0 else c)(getattr(ev, 'cause', -1)),
+            'detail': getattr(ev, 'detail', '') or None,
+        }
+
     def _handle_subscription_response(self, data):
         dapp_id = data['dAppIdentifier']
         # Correlate by request id: the RAN echoes the request's id in the
@@ -396,6 +437,9 @@ class E3Interface:
             if rfid is not None:
                 self._sub_pending_rfs.discard(rfid)
                 self._sub_results[rfid] = positive
+                if not positive:
+                    self._sub_refusals = {**self._sub_refusals, rfid: {
+                        'cause': data.get('cause'), 'detail': data.get('detail')}}
                 self._sub_cv.notify_all()
             else:
                 e3_logger.warning(
@@ -461,7 +505,13 @@ class E3Interface:
             e3_logger.warning(f"No xApp control callback registered for dApp {dapp_identifier}")
 
     def schedule_control(self, dappId: int, ranFunctionId: int, controlId: int, actionData: bytes = b"",
-                         sequenceId: int = 0):
+                         sequenceId: int = 0) -> bool:
+        """Queue a control. False, and nothing queued, when the dApp disabled it because the
+        RAN does not offer it (see :meth:`disable_control`)."""
+        if self.control_disabled(ranFunctionId, controlId):
+            e3_logger.warning("Control %s of RAN function %s is disabled (the RAN does not offer it); not sent",
+                              controlId, ranFunctionId)
+            return False
         self.outbound_queue.put(('control', {
             'ranFunctionId': ranFunctionId,
             'controlId': controlId,
@@ -469,6 +519,7 @@ class E3Interface:
             'sequenceId': sequenceId,
             'latSeq': latrec.ctx(),
         }))
+        return True
 
     def _next_report_sequence_id(self) -> int:
         """Next correlation id for a report: 1..4294967295, wrapping to 1 (0 is not a valid id)."""

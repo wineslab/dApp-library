@@ -14,7 +14,7 @@ RAN side. Install libe3 once, like any other library (it asks for `sudo`), at th
 same version as the `libe3py` this package pulls in:
 
 ```bash
-git clone --branch 0.2.3 https://github.com/wineslab/libe3 && cd libe3
+git clone --branch 0.4.3 https://github.com/wineslab/libe3 && cd libe3
 ./build_libe3 -I                          # build dependencies, once
 ./build_libe3 --all-encodings --install   # -> /usr/local
 ```
@@ -22,6 +22,13 @@ git clone --branch 0.2.3 https://github.com/wineslab/libe3 && cd libe3
 Its Python binding, `libe3py`, is a dependency of this package: pip builds it
 against the installed libe3 when you install the dApp library, in any virtual
 environment and without `sudo`.
+
+A libe3 RAN refuses a subscription that names a control id its RAN function does not
+advertise. The dApp then disables that control, subscribes again without it and keeps
+running; a disabled control is not sent (`E3Interface.schedule_control` returns `False`).
+A refused telemetry id, or any other refusal, still stops the dApp. With libe3py 0.4.3 or
+later the refusal carries the RAN's cause and text (`subscription_refusal()`); with an older
+one the dApp compares the controls it asked for with the ones the RAN advertised at setup.
 
 The dApp's `--link` / `--transport` / `--encoding` must match the gNB's
 `E3Configuration`. See [libe3's `swig/README.md`](https://github.com/wineslab/libe3/blob/main/swig/README.md)
