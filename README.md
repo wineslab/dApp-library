@@ -14,7 +14,7 @@ RAN side. Install libe3 once, like any other library (it asks for `sudo`), at th
 same version as the `libe3py` this package pulls in:
 
 ```bash
-git clone --branch 0.5.0 https://github.com/wineslab/libe3 && cd libe3
+git clone --branch 0.6.0 https://github.com/wineslab/libe3 && cd libe3
 ./build_libe3 -I                          # build dependencies, once
 ./build_libe3 --all-encodings --install   # -> /usr/local
 ```
@@ -36,6 +36,11 @@ as `callback(dapp_id, response)`. The gNB answers a control it refuses itself (n
 function or control, no subscription) either way, and the dApp logs it. An xApp control that asks for an
 answer is answered by the dApp once its xApp control callbacks have run: positive when they returned,
 negative when one raised or none is registered.
+
+Over the POSIX link a dApp uses one endpoint, whatever the transport: the IPC path
+`/tmp/dapps/e3`, or port 9990 for TCP and SCTP (ZMQ keeps its three endpoints). The gNB and the dApp
+must be built on the same libe3 release: the POSIX wire changed in 0.6.0 and nothing of the old layout is
+kept.
 
 The dApp's `--link` / `--transport` / `--encoding` must match the gNB's
 `E3Configuration`. See [libe3's `swig/README.md`](https://github.com/wineslab/libe3/blob/main/swig/README.md)
@@ -114,7 +119,7 @@ This dApp implements a spectrum sharing use case discussed in [our paper](https:
 **Connection Configuration:**
 
 - `--link` - Specify the link layer to be used. Options: `zmq`, `posix` (default: `zmq`)
-- `--transport` - Specify the transport layer to be used. Options: `ipc`, `tcp` (default: `ipc`)
+- `--transport` - Specify the transport layer to be used. Options: `ipc`, `tcp`, `sctp` (default: `ipc`; `sctp` is for `posix` only)
 
 **Data Collection and Control:**
 

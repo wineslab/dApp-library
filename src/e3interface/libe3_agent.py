@@ -31,12 +31,12 @@ except ImportError:  # pragma: no cover - environment dependent
 
 LIBE3PY_AVAILABLE = _libe3 is not None
 
-#: Minimum libe3 this package works against. 0.5.0 answers a control with an
-#: E3-ControlResponse and puts a new PDU in the E3AP choice, so an older binding
-#: does not merely lose a feature: it refuses the gNB's response (and reads a
-#: control that asks as one that does not), and a gNB built against 0.5 refuses
-#: nothing it sends. Both ends must be the same release.
-LIBE3_MIN_VERSION = "0.5.0"
+#: Minimum libe3 this package works against. 0.6.0 moves the POSIX link to one endpoint per
+#: dApp (IPC path ``/tmp/dapps/e3``, one TCP or SCTP port) with new framing, so a dApp built
+#: on an older binding cannot reach a gNB built on 0.6 over POSIX, nor the reverse; 0.5.0 had
+#: already put a new PDU (E3-ControlResponse) in the E3AP choice. Both ends must be the same
+#: release. ZMQ keeps its three endpoints and is unaffected by the POSIX change.
+LIBE3_MIN_VERSION = "0.6.0"
 
 
 def _version_tuple(version: str) -> tuple[int, ...]:
@@ -46,17 +46,11 @@ def _version_tuple(version: str) -> tuple[int, ...]:
 def _libe3py_is_current() -> bool:
     """Whether the imported binding is libe3 >= :data:`LIBE3_MIN_VERSION`.
 
-    Bindings from libe3 0.2.2 on export ``__version__``, which is compared
-    directly. Older bindings export no version, so they are probed for the thing
-    this package depends on: ``E3Event.request_ack``, added in 0.5.0 with the
-    control response.
+    Bindings from libe3 0.2.2 on export ``__version__``; an older one exports none and is
+    too old for any release this package accepts.
     """
-    if _libe3 is None:
-        return False
     version = getattr(_libe3, "__version__", None)
-    if version is not None:
-        return _version_tuple(version) >= _version_tuple(LIBE3_MIN_VERSION)
-    return hasattr(getattr(_libe3, "E3Event", object), "request_ack")
+    return version is not None and _version_tuple(version) >= _version_tuple(LIBE3_MIN_VERSION)
 
 
 #: True when libe3py is importable *and* new enough to drive this package.
@@ -75,11 +69,9 @@ _IMPORT_HINT = (
 )
 
 _VERSION_HINT = (
-    f"the installed libe3py predates libe3 {LIBE3_MIN_VERSION} (no "
-    "E3Event.request_ack). That release answers a control with an "
-    "E3-ControlResponse, a PDU that an older libe3 refuses, so this binding "
-    "and the gNB's libe3 cannot talk about a control. Install libe3 and libe3py "
-    "of the 0.5 series:\n" + _BUILD_CMD
+    f"the installed libe3py predates libe3 {LIBE3_MIN_VERSION}. That release serves a dApp "
+    "on one POSIX endpoint, so an older binding and the gNB's libe3 cannot talk over the "
+    "POSIX link. Install libe3 and libe3py of the 0.6 series:\n" + _BUILD_CMD
 )
 
 # ErrorCode.SUCCESS is 0 in libe3.

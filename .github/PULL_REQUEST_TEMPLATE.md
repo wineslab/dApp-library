@@ -52,5 +52,3 @@ Paired PR(s):
 ## Workflow confirmation
 
 - [ ] This PR was opened against the **internal** repository (private). The public mirror `wineslab/dApp-library` is updated automatically by `.github/workflows/mirror.yml`.
-- [ ] Commits will be **squashed** at merge time. Updates to this PR will be applied via **rebase** only — no merge commits, no duplicated history. (See `CONTRIBUTING.md` § Pull Request Process.)
-- [ ] I have read and followed `CONTRIBUTING.md`.
