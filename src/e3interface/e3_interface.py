@@ -13,7 +13,12 @@ from .libe3_agent import (
     EVENT_SUBSCRIPTION_RESPONSE,
     EVENT_SETUP_RESPONSE,
     EVENT_MESSAGE_ACK,
+    EVENT_CONTROL_RESPONSE,
 )
+
+# libe3 E3-Cause values (libe3 types.hpp) this module gives with a negative answer.
+CAUSE_UNSPECIFIED = 0
+CAUSE_UNSUPPORTED_RAN_FUNCTION = 5
 
 # Inbound drain tuning. poll_events blocks up to POLL_TIMEOUT_MS for the first
 # event (so stop_event is checked regularly) then sweeps up to POLL_MAX_BATCH
@@ -94,7 +99,8 @@ class E3Interface:
             self.indication_callbacks = {}   # key: (dAppId, subscriptionId) -> list(callbacks)
             self.subscription_callbacks = {} # key: dAppId -> list(callbacks)
             self.xapp_control_callbacks = {} # key: dAppId -> list(callbacks)
-            # Guards the three callback dicts above: caller-thread add_/remove_*
+            self.control_response_callbacks = {}  # key: dAppId -> list(callbacks)
+            # Guards the four callback dicts above: caller-thread add_/remove_*
             # vs. inbound-thread iteration in the _handle_* dispatchers.
             self._callback_lock = threading.Lock()
             # Source of the report correlation ids (see schedule_report).
@@ -297,11 +303,14 @@ class E3Interface:
                                 latrec.ctx_set(ev.request_id or ev.trace_seq)
                             self._handle_xapp_control_data(
                                 ev.dapp_id, ev.ran_function_id, ev.get_payload(),
-                                ev.sequence_id)
+                                ev.sequence_id, ev.request_id, ev.request_ack)
                         elif kind == EVENT_SUBSCRIPTION_RESPONSE:
                             self._handle_subscription_response(
                                 self._subscription_response_data(ev))
+                        elif kind == EVENT_CONTROL_RESPONSE:
+                            self._handle_control_response_data(ev)
                         elif kind == EVENT_MESSAGE_ACK:
+                            # DEPRECATED TO BE REMOVED in libe3: a libe3 gNB sends none; another RAN may.
                             e3_logger.debug(
                                 "Received message ACK: request=%s rc=%s",
                                 ev.request_id, ev.response_code)
@@ -353,7 +362,11 @@ class E3Interface:
                         case "control":
                             rc = self.agent.send_control(
                                 data["ranFunctionId"], data["controlId"], data["actionData"],
-                                data.get("sequenceId", 0))
+                                data.get("sequenceId", 0), data.get("requestAck", False))
+                        case "control_response":
+                            rc = self.agent.send_control_response(
+                                data["requestId"], data["ranFunctionId"], data["controlId"],
+                                data["positive"], data["cause"], data["detail"], data["outcome"])
                         case "subscription":
                             self._send_subscription(data)
                         case "ack":
@@ -483,8 +496,49 @@ class E3Interface:
         else:
             e3_logger.warning(f"No indication callback registered for dApp {dapp_identifier}")
 
+    def _handle_control_response_data(self, ev):
+        """Hand an E3-ControlResponse to the callbacks of its dApp.
+
+        The callback gets ``(dapp_id, response)``; ``response`` has ``requestId`` (the id
+        ``schedule_control`` returned through libe3), ``ranFunctionId``, ``controlId``,
+        ``responseCode`` (``"positive"`` or ``"negative"``), ``cause`` (a libe3 E3-Cause
+        value, None for none), ``detail`` and ``outcome`` (bytes, None when the service
+        model gave none). A negative one is logged whether anything listens or not.
+        """
+        positive = ev.response_code == 0
+        response = {
+            "requestId": ev.request_id,
+            "ranFunctionId": ev.ran_function_id,
+            "controlId": ev.control_id,
+            "responseCode": "positive" if positive else "negative",
+            "cause": ev.cause if ev.cause >= 0 else None,
+            "detail": ev.detail,
+            "outcome": ev.get_payload() if ev.has_outcome else None,
+        }
+        if not positive:
+            e3_logger.warning(
+                "Control %s refused by the RAN (RAN function %s, control %s, cause %s): %s",
+                ev.request_id, ev.ran_function_id, ev.control_id, response["cause"], ev.detail)
+        with self._callback_lock:
+            callbacks = list(self.control_response_callbacks.get(ev.dapp_id, []))
+        for callback in callbacks:
+            callback(ev.dapp_id, response)
+
+    def _first_control_id(self, ran_function_id):
+        """The control the RAN function advertises first, or 1 when it lists none.
+
+        An xApp control names no control, and an answer to it must.
+        """
+        try:
+            for entry in self.agent.ran_function_list():
+                if entry.ran_function_identifier == ran_function_id and entry.control_identifier_list:
+                    return int(entry.control_identifier_list[0])
+        except Exception:
+            e3_logger.exception("Could not read the RAN function list for an answer")
+        return 1
+
     def _handle_xapp_control_data(self, dapp_identifier, ran_function_id, xapp_control_data,
-                                  sequence_id=0):
+                                  sequence_id=0, request_id=0, request_ack=False):
         e3_logger.debug(
             "Received xAppControlAction: dApp=%s, ranFunc=%s, payload=%d bytes, seq=%s",
             dapp_identifier, ran_function_id, len(xapp_control_data), sequence_id,
@@ -493,21 +547,42 @@ class E3Interface:
             callbacks = list(self.xapp_control_callbacks.get(dapp_identifier, []))
         if callbacks:
             e3_logger.debug(f"Launch {len(callbacks)} xApp control callback(s) for dApp {dapp_identifier}")
-            for callback in callbacks:
-                # Callbacks predating the correlation id take two arguments. Decide
-                # from the signature rather than catching TypeError, which would
-                # re-invoke a callback that raised one of its own.
-                if _accepts_sequence_id(callback):
-                    callback(dapp_identifier, xapp_control_data, sequence_id)
-                else:
-                    callback(dapp_identifier, xapp_control_data)
+            try:
+                for callback in callbacks:
+                    # Callbacks predating the correlation id take two arguments. Decide
+                    # from the signature rather than catching TypeError, which would
+                    # re-invoke a callback that raised one of its own.
+                    if _accepts_sequence_id(callback):
+                        callback(dapp_identifier, xapp_control_data, sequence_id)
+                    else:
+                        callback(dapp_identifier, xapp_control_data)
+            except Exception as exc:
+                if request_ack:
+                    self._answer_xapp_control(request_id, ran_function_id, False,
+                                              CAUSE_UNSPECIFIED, f"the dApp failed: {exc}")
+                raise
+            if request_ack:
+                self._answer_xapp_control(request_id, ran_function_id, True)
         else:
             e3_logger.warning(f"No xApp control callback registered for dApp {dapp_identifier}")
+            if request_ack:
+                self._answer_xapp_control(request_id, ran_function_id, False,
+                                          CAUSE_UNSUPPORTED_RAN_FUNCTION,
+                                          "this dApp does not act on xApp controls")
+
+    def _answer_xapp_control(self, request_id, ran_function_id, positive,
+                             cause=-1, detail=""):
+        """Answer an xApp control that asked for it: positive once the dApp's callbacks took it."""
+        self.send_control_response(request_id, ran_function_id,
+                                   self._first_control_id(ran_function_id),
+                                   positive=positive, cause=cause, detail=detail)
 
     def schedule_control(self, dappId: int, ranFunctionId: int, controlId: int, actionData: bytes = b"",
-                         sequenceId: int = 0) -> bool:
+                         sequenceId: int = 0, requestAck: bool = False) -> bool:
         """Queue a control. False, and nothing queued, when the dApp disabled it because the
-        RAN does not offer it (see :meth:`disable_control`)."""
+        RAN does not offer it (see :meth:`disable_control`). ``requestAck`` asks the RAN for an
+        E3-ControlResponse, which reaches the callbacks of :meth:`add_control_response_callback`;
+        the RAN answers a control it refuses itself either way."""
         if self.control_disabled(ranFunctionId, controlId):
             e3_logger.warning("Control %s of RAN function %s is disabled (the RAN does not offer it); not sent",
                               controlId, ranFunctionId)
@@ -517,9 +592,28 @@ class E3Interface:
             'controlId': controlId,
             'actionData': actionData,
             'sequenceId': sequenceId,
+            'requestAck': requestAck,
             'latSeq': latrec.ctx(),
         }))
         return True
+
+    def send_control_response(self, requestId: int, ranFunctionId: int, controlId: int,
+                              positive: bool = True, cause: int = -1, detail: str = "",
+                              outcome: bytes = b""):
+        """Queue the answer to an xApp control that asked for one (``requestAck``).
+
+        The base dApp answers by itself once its xApp control callbacks have run; call this to
+        answer with a cause, a text or an outcome of your own."""
+        self.outbound_queue.put(('control_response', {
+            'requestId': requestId,
+            'ranFunctionId': ranFunctionId,
+            'controlId': controlId,
+            'positive': positive,
+            'cause': cause,
+            'detail': detail,
+            'outcome': outcome,
+            'latSeq': latrec.ctx(),
+        }))
 
     def _next_report_sequence_id(self) -> int:
         """Next correlation id for a report: 1..4294967295, wrapping to 1 (0 is not a valid id)."""
@@ -667,6 +761,29 @@ class E3Interface:
                         e3_logger.warning(f"Specific xApp control callback not found for dApp {dapp_id}")
             else:
                 e3_logger.warning(f"No xApp control callbacks found for dApp {dapp_id}")
+
+    def add_control_response_callback(self, dapp_id: int, callback):
+        """Register ``callback(dapp_id, response)`` for the E3-ControlResponse that answers a control."""
+        with self._callback_lock:
+            callbacks = list(self.control_response_callbacks.get(dapp_id, []))
+            if callback not in callbacks:
+                callbacks.append(callback)
+                self.control_response_callbacks[dapp_id] = callbacks
+            else:
+                e3_logger.warning(f"Control response callback already registered for dApp {dapp_id}, skipping")
+
+    def remove_control_response_callback(self, dapp_id: int, callback=None):
+        with self._callback_lock:
+            if dapp_id not in self.control_response_callbacks:
+                e3_logger.warning(f"No control response callbacks found for dApp {dapp_id}")
+            elif callback is None:
+                del self.control_response_callbacks[dapp_id]
+            else:
+                callbacks = [c for c in self.control_response_callbacks[dapp_id] if c != callback]
+                if callbacks:
+                    self.control_response_callbacks[dapp_id] = callbacks
+                else:
+                    del self.control_response_callbacks[dapp_id]
 
     def terminate_connections(self):
         e3_logger.info("Stop event")

@@ -31,11 +31,12 @@ except ImportError:  # pragma: no cover - environment dependent
 
 LIBE3PY_AVAILABLE = _libe3 is not None
 
-#: Minimum libe3 this package works against. 0.2.0 added the correlation id
-#: that ``DAppSession.send_report()`` takes as a mandatory argument, so an older
-#: binding does not merely lose a feature -- it cannot complete the E3 setup
-#: handshake against a matching gNB, which surfaces as "RAN refused Setup".
-LIBE3_MIN_VERSION = "0.2.0"
+#: Minimum libe3 this package works against. 0.5.0 answers a control with an
+#: E3-ControlResponse and puts a new PDU in the E3AP choice, so an older binding
+#: does not merely lose a feature: it refuses the gNB's response (and reads a
+#: control that asks as one that does not), and a gNB built against 0.5 refuses
+#: nothing it sends. Both ends must be the same release.
+LIBE3_MIN_VERSION = "0.5.0"
 
 
 def _version_tuple(version: str) -> tuple[int, ...]:
@@ -47,15 +48,15 @@ def _libe3py_is_current() -> bool:
 
     Bindings from libe3 0.2.2 on export ``__version__``, which is compared
     directly. Older bindings export no version, so they are probed for the thing
-    this package depends on: ``E3Event.sequence_id``, added in 0.2.0 alongside
-    the mandatory ``send_report`` argument.
+    this package depends on: ``E3Event.request_ack``, added in 0.5.0 with the
+    control response.
     """
     if _libe3 is None:
         return False
     version = getattr(_libe3, "__version__", None)
     if version is not None:
         return _version_tuple(version) >= _version_tuple(LIBE3_MIN_VERSION)
-    return hasattr(getattr(_libe3, "E3Event", object), "sequence_id")
+    return hasattr(getattr(_libe3, "E3Event", object), "request_ack")
 
 
 #: True when libe3py is importable *and* new enough to drive this package.
@@ -75,10 +76,10 @@ _IMPORT_HINT = (
 
 _VERSION_HINT = (
     f"the installed libe3py predates libe3 {LIBE3_MIN_VERSION} (no "
-    "E3Event.sequence_id). That release made the correlation id a mandatory "
-    "argument of DAppSession.send_report(), so this binding cannot complete "
-    "the E3 setup handshake against a matching gNB -- the run fails with "
-    "'RAN refused Setup'. Install libe3 and libe3py of the 0.2 series:\n" + _BUILD_CMD
+    "E3Event.request_ack). That release answers a control with an "
+    "E3-ControlResponse, a PDU that an older libe3 refuses, so this binding "
+    "and the gNB's libe3 cannot talk about a control. Install libe3 and libe3py "
+    "of the 0.5 series:\n" + _BUILD_CMD
 )
 
 # ErrorCode.SUCCESS is 0 in libe3.
@@ -92,7 +93,8 @@ EVENT_INDICATION = 1
 EVENT_XAPP_CONTROL = 2
 EVENT_SUBSCRIPTION_RESPONSE = 3
 EVENT_SETUP_RESPONSE = 4
-EVENT_MESSAGE_ACK = 5
+EVENT_MESSAGE_ACK = 5  # DEPRECATED TO BE REMOVED in libe3: it sends no ack, and reports one from another RAN
+EVENT_CONTROL_RESPONSE = 7
 
 # E3AP refusal cause the dApp acts on: the same value as libe3's Cause enum (types.hpp),
 # a stable wire value. A telemetry or control id the RAN function does not advertise.
@@ -268,16 +270,34 @@ class Libe3Agent:
         return self._session.unsubscribe(int(ran_function_id))
 
     def send_control(self, ran_function_id: int, control_id: int, action_data: bytes = b"",
-                     sequence_id: int = 0) -> int:
+                     sequence_id: int = 0, request_ack: bool = False) -> int:
         """Send a control to the RAN.
 
         ``sequence_id`` is the correlation id of the xApp procedure this control
         carries out. Echo the id from the xApp control that prompted it, so the
         RAN can report back when the decision reached the air; 0 means the dApp
         decided on its own and there is no procedure to answer.
+
+        ``request_ack`` asks the RAN for an E3-ControlResponse once it has dealt
+        with the control. The RAN answers a control it refuses itself either way.
+        Returns the assigned message id, which is the ``request_id`` of the answer.
         """
         return self._session.send_control(int(ran_function_id), int(control_id), bytes(action_data),
-                                          int(sequence_id))
+                                          int(sequence_id), bool(request_ack))
+
+    def send_control_response(self, request_id: int, ran_function_id: int, control_id: int,
+                              positive: bool = True, cause: int = -1, detail: str = "",
+                              outcome: bytes = b"") -> int:
+        """Answer an xApp control whose ``request_ack`` is set.
+
+        ``request_id`` is the event's ``request_id``. ``control_id`` is the control that
+        was applied, from the list the RAN function advertises. ``cause`` is a libe3
+        E3-Cause value (0 to 14), -1 for none; ``detail`` is text for it, up to 512 bytes;
+        ``outcome`` is what the dApp reports about the control, up to 32768 bytes.
+        """
+        return self._session.send_control_response(int(request_id), int(ran_function_id),
+                                                   int(control_id), 0 if positive else 1,
+                                                   int(cause), str(detail), bytes(outcome))
 
     def send_report(self, ran_function_id: int, report_data: bytes, sequence_id: int) -> int:
         """Send a report to the RAN.
@@ -289,6 +309,8 @@ class Libe3Agent:
         return self._session.send_report(int(ran_function_id), bytes(report_data), int(sequence_id))
 
     def send_message_ack(self, request_id: int, positive: bool = True) -> int:
+        """DEPRECATED TO BE REMOVED in libe3. A libe3 RAN does not read it: answer an xApp
+        control with :meth:`send_control_response`."""
         return self._session.send_message_ack(int(request_id), 0 if positive else 1)
 
     # --- inbound (batched drain) ------------------------------------------------
@@ -298,7 +320,8 @@ class Libe3Agent:
 
         Returns the SWIG ``E3EventVec`` (iterable of events, each with ``kind``,
         ``dapp_id``, ``ran_function_id``, ``subscription_id``, ``request_id``,
-        ``sequence_id``, ``response_code`` and ``get_payload()`` returning native
+        ``sequence_id``, ``response_code``, ``control_id``, ``cause``, ``detail``,
+        ``request_ack``, ``has_outcome`` and ``get_payload()`` returning native
         ``bytes``).
         Empty on timeout. The GIL is released for the whole call so libe3's
         threads run freely.

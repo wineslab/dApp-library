@@ -14,7 +14,7 @@ RAN side. Install libe3 once, like any other library (it asks for `sudo`), at th
 same version as the `libe3py` this package pulls in:
 
 ```bash
-git clone --branch 0.4.3 https://github.com/wineslab/libe3 && cd libe3
+git clone --branch 0.5.0 https://github.com/wineslab/libe3 && cd libe3
 ./build_libe3 -I                          # build dependencies, once
 ./build_libe3 --all-encodings --install   # -> /usr/local
 ```
@@ -29,6 +29,13 @@ running; a disabled control is not sent (`E3Interface.schedule_control` returns 
 A refused telemetry id, or any other refusal, still stops the dApp. With libe3py 0.4.3 or
 later the refusal carries the RAN's cause and text (`subscription_refusal()`); with an older
 one the dApp compares the controls it asked for with the ones the RAN advertised at setup.
+
+A control is answered with an `E3-ControlResponse`, not an ack. `E3Interface.schedule_control(...,
+requestAck=True)` asks the gNB for one, and `add_control_response_callback(dapp_id, callback)` receives it
+as `callback(dapp_id, response)`. The gNB answers a control it refuses itself (no setup, unknown RAN
+function or control, no subscription) either way, and the dApp logs it. An xApp control that asks for an
+answer is answered by the dApp once its xApp control callbacks have run: positive when they returned,
+negative when one raised or none is registered.
 
 The dApp's `--link` / `--transport` / `--encoding` must match the gNB's
 `E3Configuration`. See [libe3's `swig/README.md`](https://github.com/wineslab/libe3/blob/main/swig/README.md)

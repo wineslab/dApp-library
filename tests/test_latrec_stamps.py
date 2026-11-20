@@ -58,6 +58,7 @@ class _Ev:
     def __init__(self, kind, payload=b"x", request_id=0, trace_seq=0):
         self.kind, self.dapp_id, self.ran_function_id = kind, 1, 2
         self.request_id, self.trace_seq, self.sequence_id = request_id, trace_seq, 0
+        self.request_ack = False
         self.subscription_id, self.response_code = 0, -1
         self._p = payload
 
@@ -113,7 +114,7 @@ def test_scheduled_messages_carry_the_producer_key_to_the_outbound_thread(rec):
             calls.append(("report", state["ctx"]))
             return 0
 
-        def send_control(self, rf, cid, data, seq_id=0):
+        def send_control(self, rf, cid, data, seq_id=0, request_ack=False):
             calls.append(("control", state["ctx"]))
             return 0
 

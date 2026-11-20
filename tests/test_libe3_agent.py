@@ -47,8 +47,26 @@ def test_invalid_config_rejected():
 def test_event_kind_constants_exposed():
     for name in ("EVENT_INDICATION", "EVENT_XAPP_CONTROL",
                  "EVENT_SUBSCRIPTION_RESPONSE", "EVENT_SETUP_RESPONSE",
-                 "EVENT_MESSAGE_ACK"):
+                 "EVENT_MESSAGE_ACK", "EVENT_CONTROL_RESPONSE"):
         assert hasattr(libe3_agent, name)
+
+
+def test_event_kinds_match_the_binding():
+    import libe3py
+
+    for name in ("EVENT_INDICATION", "EVENT_XAPP_CONTROL", "EVENT_SUBSCRIPTION_RESPONSE",
+                 "EVENT_SETUP_RESPONSE", "EVENT_MESSAGE_ACK", "EVENT_CONTROL_RESPONSE"):
+        assert getattr(libe3_agent, name) == getattr(libe3py, "E3_" + name)
+
+
+def test_the_facade_drives_the_binding_s_control_verbs():
+    """The signatures of send_control and send_control_response are the binding's."""
+    agent = Libe3Agent(link="zmq", transport="ipc", encoding="asn1",
+                       dapp_name="TestDApp", log_level=0)
+    # Not set up: both fail with a negative ErrorCode, not with a TypeError.
+    assert agent.send_control(1, 1, b"x", 0, request_ack=True) < 0
+    assert agent.send_control_response(1, 1, 1, positive=False, cause=7, detail="no",
+                                       outcome=b"{}") < 0
 
 
 if __name__ == "__main__":
