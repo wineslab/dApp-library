@@ -14,7 +14,7 @@ RAN side. Install libe3 once, like any other library (it asks for `sudo`), at th
 same version as the `libe3py` this package pulls in:
 
 ```bash
-git clone --branch 0.6.0 https://github.com/wineslab/libe3 && cd libe3
+git clone --branch 0.6.1 https://github.com/wineslab/libe3 && cd libe3
 ./build_libe3 -I                          # build dependencies, once
 ./build_libe3 --all-encodings --install   # -> /usr/local
 ```

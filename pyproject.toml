@@ -23,11 +23,12 @@ license-files = ["LICENSE"]
 # against the libe3 installed on the machine, which must be the same version:
 # install libe3 once first (`./build_libe3 --all-encodings --install`, see
 # https://github.com/wineslab/libe3). The 0.6 series is required: 0.6.0 serves a
-# dApp on one POSIX endpoint, which an older libe3 does not speak, and 0.5.0 answers a
-# control with an E3-ControlResponse, a PDU that an older libe3 refuses.
+# dApp on one POSIX endpoint, which an older libe3 does not speak, 0.5.0 answers a
+# control with an E3-ControlResponse, a PDU that an older libe3 refuses, and 0.6.1 keeps
+# libe3's asn1c runtime private to the library.
 # (asn1tools is still required for the in-Python service-model codecs.)
 dependencies = [
-    "libe3py>=0.6.0,<0.7",
+    "libe3py>=0.6.1,<0.7",
     "asn1tools",
     "typing_extensions",
     "numpy",

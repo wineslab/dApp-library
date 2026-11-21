@@ -34,9 +34,10 @@ LIBE3PY_AVAILABLE = _libe3 is not None
 #: Minimum libe3 this package works against. 0.6.0 moves the POSIX link to one endpoint per
 #: dApp (IPC path ``/tmp/dapps/e3``, one TCP or SCTP port) with new framing, so a dApp built
 #: on an older binding cannot reach a gNB built on 0.6 over POSIX, nor the reverse; 0.5.0 had
-#: already put a new PDU (E3-ControlResponse) in the E3AP choice. Both ends must be the same
-#: release. ZMQ keeps its three endpoints and is unaffected by the POSIX change.
-LIBE3_MIN_VERSION = "0.6.0"
+#: already put a new PDU (E3-ControlResponse) in the E3AP choice; 0.6.1 stops exporting libe3's asn1c
+#: runtime. Both ends must be the same release. ZMQ keeps its three endpoints and is unaffected
+#: by the POSIX change.
+LIBE3_MIN_VERSION = "0.6.1"
 
 
 def _version_tuple(version: str) -> tuple[int, ...]:
@@ -69,9 +70,10 @@ _IMPORT_HINT = (
 )
 
 _VERSION_HINT = (
-    f"the installed libe3py predates libe3 {LIBE3_MIN_VERSION}. That release serves a dApp "
-    "on one POSIX endpoint, so an older binding and the gNB's libe3 cannot talk over the "
-    "POSIX link. Install libe3 and libe3py of the 0.6 series:\n" + _BUILD_CMD
+    f"the installed libe3py predates libe3 {LIBE3_MIN_VERSION}. 0.6.0 serves a dApp on one "
+    "POSIX endpoint, so an older binding and the gNB's libe3 cannot talk over the POSIX link; "
+    f"0.6.1 keeps libe3's asn1c runtime private. Install libe3 and libe3py of the 0.6 "
+    f"series, {LIBE3_MIN_VERSION} or newer:\n" + _BUILD_CMD
 )
 
 # ErrorCode.SUCCESS is 0 in libe3.

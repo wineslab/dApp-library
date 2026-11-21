@@ -133,9 +133,9 @@ def test_the_control_response_event_kind_is_7():
     assert EVENT_CONTROL_RESPONSE == 7
 
 
-@pytest.mark.parametrize("version,usable", [("0.5.0", False), ("0.5.9", False), ("0.6.0", True),
-                                            ("0.6.2", True), ("0.10.0", True)])
-def test_the_binding_must_be_libe3_0_6_or_newer(monkeypatch, version, usable):
+@pytest.mark.parametrize("version,usable", [("0.5.0", False), ("0.5.9", False), ("0.6.0", False),
+                                            ("0.6.1", True), ("0.6.2", True), ("0.10.0", True)])
+def test_the_binding_must_be_libe3_0_6_1_or_newer(monkeypatch, version, usable):
     monkeypatch.setattr(libe3_agent, "_libe3", types.SimpleNamespace(__version__=version))
     assert libe3_agent._libe3py_is_current() is usable
 
